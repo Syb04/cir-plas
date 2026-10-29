@@ -72,6 +72,12 @@ Lbz_12_1  B_12_1 Bm_12_1 2.7e-8              ; Le = me*dz/(e^2 n A), dz=28 mm
 Rbz_12_1  Bm_12_1 B_12_2 4.1                 ; Re = nu_m*Le, nu_m=1.5e8 1/s
 Cbz_12_1  B_12_1 B_12_2  1.17e-12            ; eps0*A/dz
 Xsht_12   B_12_2 T_12    sheath A=3.691e-3 ns=1.7e15 Te=3 ...   ; 上部は裸の接地電極（上部スタック無し）
+* ---- cell 30 : region=fr (esc_coupled)  下部導体は W。スタック: ESC 1.0 mm -> 結合リング(石英) 2 mm -> FR(Si) 4 mm
+Cesc_30   W      S1_30   ...                 ; ESC ceramic under FR
+Ccr_30    S1_30  S2_30   ...                 ; coupling ring (quartz)
+Cfr_30    S2_30  Sb_30   ...                 ; FR dielectric part
+Rfr_30    S2_30  Sb_30   ...                 ; FR conductivity (doped Si)
+Xshb_30   B_30_1 Sb_30   sheath ...
 * ---- radial boundary 12 : r=0.1200 m  dr=5.0e-3 m   (c = mu0*dr/(2*pi*r) = 8.33e-9 H/m)
 * level 1: wafer layer  zeta=1.39e-3 m (層の中央高さ)
 Er_12_1   Sb_12  Er1_12  A_12_1 0  1         ; 磁束チェーン起電力 V(A_12_1)-V(0)
@@ -108,9 +114,10 @@ Bext_srcW  nWs 0  V = 'VW1*min(1,time/tramp)*sin(2*pi*fW1*time+phW1) + VW2*min(1
 Lext_fW    nWs nWb  {Lfeed_W}
 Cext_bW    nWb W    {Cb_W} ic={Vdc_W}
 Cext_sW    W   0    {Cstray_W}
-* ---- port F : cap_to_gnd tuning
-Cext_tuneF F 0 {Ctune_F}
-Cext_WF    W F {C_WF}
+* ---- FR : esc_coupled（既定）… ポート F は存在しない。FR 領域の下部導体ノードは W
+* ---- (オプション separate 構成の例) port F : cap_to_gnd
+* Cext_tuneF F 0 {Ctune_F}
+* Cext_WF    W F {C_WF}
 .ic v(W)={Vdc_W} ...
 ```
 

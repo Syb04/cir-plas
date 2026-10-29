@@ -2,9 +2,11 @@
 
 ## 1. 技術スタック
 
-### 1.1 推奨案と代替案
+### 1.1 採用案と比較検討した代替案
 
-| 項目 | **A: Python + PySide6（推奨）** | B: C++20 + Qt 6 | C: C# .NET 8 + WPF |
+**決定（06 章 Q1）：A. Python + PySide6 を採用します。** 以下は比較の記録です。
+
+| 項目 | **A: Python + PySide6（採用）** | B: C++20 + Qt 6 | C: C# .NET 8 + WPF |
 |---|---|---|---|
 | GUI | PySide6（Qt 6 Widgets）＋ pyqtgraph | Qt Widgets ＋ QCustomPlot / ImPlot | WPF ＋ ScottPlot 5 |
 | 数値 | numpy / scipy | Eigen | Math.NET |
@@ -18,7 +20,7 @@
 | 配布 | 埋め込み Python 同梱 zip / インストーラ（~150 MB） | exe ＋ Qt DLL（~40 MB） | 自己完結 exe（~80 MB） |
 | 開発工数（相対） | 1 | 2〜3 | 1.5 |
 
-**推奨理由**：本ツールの計算負荷は ngspice（C 実装）と行列演算（numpy/scipy）が担い、
+**採用理由**：本ツールの計算負荷は ngspice（C 実装）と行列演算（numpy/scipy）が担い、
 Python 層はネットリスト生成・後処理・GUI に限られます。GUI は Qt のネイティブウィジェットで描画されるため
 Web ベースの UI とは異なり操作は軽快で、pyqtgraph は $10^6$ 点規模の波形をインタラクティブに扱えます。
 一方、本ツールの価値はシースモデル・加熱モデル・密度モデルの改良サイクルの速さにあり、
@@ -26,7 +28,6 @@ Web ベースの UI とは異なり操作は軽快で、pyqtgraph は $10^6$ 点
 **解析時間の目標**（02 章 §7）で担保します。
 
 将来、GUI だけを C++/Qt に置き換える判断をしても、コア（ワーカ CLI ＋ HDF5）は変更不要な境界で設計します。
-最終決定は [06_decisions.md](06_decisions.md) Q1 で確認します。
 
 ### 1.2 バージョン方針（案 A）
 
@@ -122,8 +123,8 @@ cirplas/
        "stack": [{"material": "al2o3", "t": 1.0e-3}, {"material": "si_wafer_p", "t": 0.775e-3}]},
       {"name": "edge_gap", "r_out": 0.151, "conductor": "W",
        "stack": [{"material": "al2o3", "t": 1.0e-3}]},
-      {"name": "fr",       "r_out": 0.180, "conductor": "F",
-       "stack": [{"material": "quartz", "t": 2.0e-3}, {"material": "si_fr", "t": 4.0e-3}]},
+      {"name": "fr",       "r_out": 0.180, "conductor": "W",
+       "stack": [{"material": "al2o3", "t": 1.0e-3}, {"material": "quartz", "t": 2.0e-3}, {"material": "si_fr", "t": 4.0e-3}]},
       {"name": "outer",    "r_out": 0.250, "conductor": "G",
        "stack": [{"material": "quartz", "t": 6.0e-3}]}
     ],
@@ -141,10 +142,9 @@ cirplas/
   "circuit": {
     "ports": {
       "W": {"sources": [{"f": 60e6, "v": 400, "phase_deg": 0}],
-            "blocking_c": 2.0e-9, "l_feed": 20e-9, "c_stray": 300e-12},
-      "F": {"tuning": {"type": "cap_to_gnd", "c": 150e-12}}
+            "blocking_c": 2.0e-9, "l_feed": 20e-9, "c_stray": 300e-12}
     },
-    "c_wf": {"mode": "auto"},
+    "fr": {"type": "esc_coupled"},
     "extra_netlist": ""
   },
   "numerics": {
@@ -160,6 +160,7 @@ cirplas/
 ```
 
 - 材料名・ガス名は `data/` の DB キー。インライン定義（`{"eps_r": 9.5, "sigma": 0}`）も可。
+- `circuit.fr.type` が `separate` の場合は `fr` 領域の `conductor` を `"F"` にし、`ports.F` と `c_wf` を追加します。
 - 密度 `table`/`file` 指定では r–n 対を与えます。
 
 ### 4.2 結果ファイル（HDF5）
@@ -235,10 +236,15 @@ cirplas/
 
 ## 9. 配布とライセンス
 
-- 配布形態：埋め込み Python 同梱の zip（展開して `CirPlas.exe` 実行）と Inno Setup インストーラの両方。`ngspice.dll` と `spinit`・コードモデル（`*.cm`）を同梱。
+- 配布形態（決定）：**Windows インストーラ**（Inno Setup、埋め込み Python ランタイム同梱、スタートメニュー登録、`.cirplas.json` の関連付け）を主とし、
+  展開して使える zip も併せて提供します。`ngspice.dll` と `spinit`・コードモデル（`*.cm`）を同梱し、利用者側のインストールは不要です。
+- UI 既定言語（決定）：日本語（英語に切替可）。
+- 本ツールのライセンス（決定：OSS）：**Apache-2.0 を提案**します（特許条項を含み企業由来の OSS で一般的。MIT/BSD-3 でも可）。
+  リポジトリに `LICENSE`、`NOTICE`、`THIRD_PARTY_NOTICES.md` を置きます。
 - 第三者ライセンス：ngspice（修正 BSD）、Qt/PySide6（LGPL v3、動的リンク）、pyqtgraph（MIT）、numpy/scipy/h5py（BSD）。
-  いずれも社内利用・商用利用に支障はありません。LGPL の要件（ライセンス表示、ライブラリ差し替え可能性）はドキュメントとパッケージ構成で満たします。
-- 本ツール自身のライセンスは未定（06 章 Q8）。
+  いずれも OSS 公開・商用利用に支障はありません。LGPL の要件（ライセンス表示、ライブラリ差し替え可能性）はインストーラの構成
+  （PySide6 を個別ファイルとして同梱）とドキュメントで満たします。
+- OSS 公開に伴い、CI（GitHub Actions）は公開リポジトリの無料枠で運用し、リリースは GitHub Releases にインストーラと zip を添付します。
 
 ## 10. セキュリティ・安全性
 
