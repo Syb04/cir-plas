@@ -29,7 +29,7 @@ QT_EXCLUDES = [f"PySide6.{m}" for m in (
     "QtMultimedia", "QtMultimediaWidgets", "QtCharts", "QtDataVisualization", "QtGraphs", "QtPdf", "QtPdfWidgets", "QtLocation",
     "QtPositioning", "QtRemoteObjects", "QtSensors", "QtSerialPort", "QtSerialBus", "QtTest", "QtBluetooth", "QtNfc", "QtDesigner",
     "QtHelp", "QtSql", "QtNetworkAuth", "QtScxml", "QtStateMachine", "QtTextToSpeech", "QtSpatialAudio", "QtHttpServer", "QtUiTools",
-    "QtOpenGLWidgets", "QtAxContainer", "QtAsyncio",
+    "QtAxContainer", "QtAsyncio",
 )]
 hidden = ["h5py.defs", "h5py.utils", "h5py.h5ac", "h5py._proxy", "scipy.optimize", "cirplas.core.analysis.tran", "cirplas.core.results"]
 
@@ -38,7 +38,7 @@ a_gui = Analysis(
     pathex=[str(ROOT)],
     binaries=binaries,
     datas=datas,
-    hiddenimports=hidden + ["cirplas.gui.app"],
+    hiddenimports=hidden + ["cirplas.gui.app", "PySide6.QtOpenGL", "PySide6.QtOpenGLWidgets", "PySide6.QtSvg"],
     excludes=["tkinter", "matplotlib", "IPython", "notebook"] + QT_EXCLUDES,
     noarchive=False,
 )
