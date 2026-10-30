@@ -205,6 +205,9 @@ def postprocess_tran(res: RawResult, idx: NetlistIndex, model: CircuitModel, per
                                 phase_deg=float(np.degrees(np.angle(z))) if z == z else float("nan"),
                                 p=p_port, p_source=p_src, z_re=float(z.real), z_im=float(z.imag), i_dc=hi.dc))
         p_src_total += p_src
-    pbe = (p_src_total - p_diss) / p_src_total if p_src_total else float("nan")
+    # DC power flowing into the series blocking capacitors (charging): (V_src,dc - V_port,dc) * I_dc with V_src,dc = 0
+    p_cap_dc = sum(-pr.v_dc * pr.i_dc for pr in ports)
+    pbe = (p_src_total - p_diss - p_cap_dc) / p_src_total if p_src_total else float("nan")
     return TranPostResult(t_window=t_u, cells=cells, ports=ports, p_ohm_radial_total=p_rad_total,
-                          p_total_dissipated=p_diss, p_source_total=p_src_total, power_balance_error=pbe)
+                          p_total_dissipated=p_diss, p_source_total=p_src_total, power_balance_error=pbe,
+                          extra={"p_capacitor_dc": p_cap_dc})

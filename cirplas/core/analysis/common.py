@@ -62,6 +62,10 @@ def nominal_widths(project: Project, mesh: Mesh, plasma: PlasmaState, est: Estim
     spec = project.plasma.sheath
     s_b = np.zeros(mesh.n_cells)
     s_t = np.zeros(mesh.n_cells)
+    if spec.linear_fixed_width:
+        s_b[:] = spec.linear_fixed_width
+        s_t[:] = spec.linear_fixed_width
+        return s_b, s_t
     for i, c in enumerate(mesh.cells):
         sp = make_sheath_params(c.area, float(plasma.ns[i]), plasma.te, plasma.gas.mass_kg, spec)
         s_b[i] = sp.nominal_width(float(est.v1_b[i]))

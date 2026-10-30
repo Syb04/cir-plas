@@ -58,12 +58,18 @@ class CellElements:
     v1_b: float  # RF sheath voltage amplitude estimate (linearization / nominal width)
     v1_t: float
 
+    fixed_width: Optional[float] = None  # validation aid (plasma.sheath.linear_fixed_width)
+
     @property
     def c_lin_b(self) -> float:
+        if self.fixed_width:
+            return EPS0 * self.cell.area / self.fixed_width
         return self.sheath_b.linearized_capacitance(self.v1_b)
 
     @property
     def c_lin_t(self) -> float:
+        if self.fixed_width:
+            return EPS0 * self.cell.area / self.fixed_width
         return self.sheath_t.linearized_capacitance(self.v1_t)
 
 
@@ -110,7 +116,7 @@ def build_circuit_model(project: Project, mesh: Mesh, plasma: PlasmaState, v1_b,
         bulk = [drude_segment(n0, plasma.nu_m, float(dz), c.area) for dz in c.bulk_thickness]
         sh_b = make_sheath_params(c.area, ns, plasma.te, mass, spec)
         sh_t = make_sheath_params(c.area, ns, plasma.te, mass, spec)
-        cells.append(CellElements(c, n0, ns, bottom, sh_b, bulk, sh_t, top, float(v1_b[i]), float(v1_t[i])))
+        cells.append(CellElements(c, n0, ns, bottom, sh_b, bulk, sh_t, top, float(v1_b[i]), float(v1_t[i]), spec.linear_fixed_width))
 
     boundaries: list[BoundaryElements] = []
     for b in mesh.boundaries:

@@ -198,6 +198,9 @@ class SheathSpec(StrictModel):
         "bsource", description="SPICE realization of the Boltzmann electron current: smooth-exponential B source (default) or parallel diodes"
     )
     smoothing: float = Field(0.1, gt=0, le=1, description="softplus width for Q(V) guard, in units of Vmin")
+    linear_fixed_width: Optional[float] = Field(
+        None, gt=0, description="validation aid: in AC mode use C = eps0 A / width instead of the linearized Q(V)"
+    )
     cap_form: Literal["charge", "capacitance", "ecf"] = Field(
         "ecf", description="SPICE realization of the nonlinear sheath capacitor: 'ecf' (charge via auxiliary capacitor and "
         "controlled sources), 'charge' (ngspice Q='...' device) or 'capacitance' (C='...' device)"

@@ -128,7 +128,7 @@ def extract_ac(res: RawResult, idx: NetlistIndex, model: CircuitModel, frequency
                     iterations=iterations, diagnostics=diag, radial_currents=radial_currents)
 
 
-def run_ac(ctx: RunContext, frequency: float | None = None, est: Estimates | None = None, max_iter: int = 4, relax: float = 0.7,
+def run_ac(ctx: RunContext, frequency: float | None = None, est: Estimates | None = None, max_iter: int = 12, relax: float = 0.85,
            tol: float = 0.02) -> AcResult:
     """Quasi-linear AC solution at one frequency: iterate sheath linearization until the sheath
     voltage amplitudes used for C_lin agree with the solved ones."""

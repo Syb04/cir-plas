@@ -34,53 +34,74 @@ def single_cell_project(r_wafer=0.15, gap=0.03, n0=1e16, te=3.0, f=13.56e6, v=30
 
 
 def test_v1_linear_psr_frequency(backend):
-    """The series resonance of the linearized single cell is w_pe sqrt((s_b+s_t)/l_p)."""
+    """The series resonance of the linearized single cell equals the zero of Im Z of the element chain
+    (sheath C, bulk Drude L-R in parallel with the displacement C, sheath C), and agrees with the textbook
+    estimate w_pe sqrt(s_tot/l_p) corrected by the plasma dielectric factor (1 - w^2/w_pe^2)."""
+    from scipy.optimize import brentq
+
     p = single_cell_project(f=13.56e6, v=200.0)
     ctx = RunContext(project=p, backend=backend, log=lambda m: None)
     ac = run_ac(ctx)
     model = ac.model
     cell = model.mesh.cells[0]
     ce = model.cells[0]
-    # analytic from the same element values: L = Le(bulk) ; 1/C = 1/C_lin_b + 1/C_lin_t ; (R neglected)
-    L = ce.bulk[0].l
-    C_eff = 1.0 / (1.0 / ce.c_lin_b + 1.0 / ce.c_lin_t)
-    f_psr_elements = 1.0 / (2 * math.pi * math.sqrt(L * C_eff))
-    # sweep the AC response and locate the admittance maximum
-    from cirplas.core.netlist.builder import NetlistBuilder, AcSettings
+    d = ce.bulk[0]
 
-    sweep = AcSettings(frequency=f_psr_elements, sweep=(f_psr_elements / 4, f_psr_elements * 4, 400))
+    def im_z(f):
+        w = 2 * math.pi * f
+        z_bulk = 1.0 / (1.0 / (1j * w * d.l + d.r) + 1j * w * d.c)
+        z = 1.0 / (1j * w * ce.c_lin_b) + 1.0 / (1j * w * ce.c_lin_t) + z_bulk + 2 * ce.sheath_b.rst
+        return z.imag
+
+    # bracket below the electron plasma frequency (pole of the Drude L || C_disp element)
+    f_pe = plasma_frequency(model.plasma.n0[0]) / (2 * math.pi)
+    f_root = brentq(im_z, 50e6, 0.9 * f_pe)
+    sweep = AcSettings(frequency=f_root, sweep=(f_root / 4, f_root * 4, 400))
     netlist, idx = NetlistBuilder(model, "ac", ac=sweep).build()
     res = backend.run(netlist)
     assert not res.errors
     f_vec = res.get("frequency").real
     i_port = np.abs(res.get(idx.i_port["W"]))
     f_peak = f_vec[np.argmax(i_port)]
-    assert abs(f_peak - f_psr_elements) / f_psr_elements < 0.02
-    # and the element-based value agrees with the textbook estimate using the sheath widths of the mesh
+    assert abs(f_peak - f_root) / f_root < 0.01, (f_peak, f_root)
+    # textbook: w_psr = w_pe sqrt(s_tot/l_p) with the capacitances taken as eps0 A / s_lin
     w_pe = plasma_frequency(model.plasma.n0[0])
-    f_text = w_pe * math.sqrt((cell.s_b + cell.s_t) / cell.l_p) / (2 * math.pi)
-    assert abs(f_psr_elements - f_text) / f_text < 0.15  # C_lin differs from eps0 A/s_mean by the Q(V) nonlinearity
+    s_lin_b = C.EPS0 * cell.area / ce.c_lin_b
+    s_lin_t = C.EPS0 * cell.area / ce.c_lin_t
+    w_text = w_pe * math.sqrt((s_lin_b + s_lin_t) / cell.l_p)
+    w_corr = w_text / math.sqrt(1.0 + (w_text / w_pe) ** 2)  # resonance of L_e || C_disp in series with the sheath C
+    assert abs(2 * math.pi * f_root - w_corr) / w_corr < 0.03, (f_root, w_corr / (2 * math.pi))
 
 
 def test_v1_symmetric_sheath_waveform_and_power_balance(backend):
-    """Symmetric cell (equal areas, no blocking cap): the two sheath voltages are anti-phase copies,
-    the DC/max ratio of a matrix sheath driven by a nearly sinusoidal current is 3/8, and the
-    power balance closes to within 1 %."""
+    """Symmetric cell (equal areas, no blocking cap): the two sheaths are anti-phase copies, the sheath follows
+    the matrix law Q = Kq sqrt(V + Vmin) with a nearly sinusoidal charge oscillation (L&L homogeneous model),
+    the time average obeys <V+Vmin>/max(V+Vmin) = (Q0^2 + q1^2/2)/(Q0+q1)^2, and the power balance closes."""
+    from cirplas.core.post.signals import harmonics, resample, uniform_grid
+
     p = single_cell_project(f=13.56e6, v=300.0, stochastic=True)
     ctx = RunContext(project=p, backend=backend, log=lambda m: None)
     tr = run_tran(ctx)
     po = tr.post
     c = po.cells[0]
-    # symmetry: equal DC sheath voltages (within 2 %) and amplitudes
     assert abs(c.vsh_b_dc - c.vsh_t_dc) / c.vsh_b_dc < 0.02
     assert abs(c.vsh_b_1 - c.vsh_t_1) / c.vsh_b_1 < 0.02
-    # matrix sheath with a sinusoidal current: V ~ (1 - cos)^2 -> <V>/Vmax = 3/8 (electron/ion currents perturb slightly)
-    ratio = c.vsh_b_dc / c.vsh_b_max
-    assert abs(ratio - 3.0 / 8.0) < 0.03, ratio
-    assert abs(po.power_balance_error) < 0.01
-    # stochastic heating equals m v_e n_s <u_s^2> A evaluated from the capacitive current waveform (same definition)
+    # charge waveform from the sheath voltage
+    res, idx = tr.raw, tr.index
+    t = res.scale
+    t_u = uniform_grid(t[-1] - tr.meas_cycles * tr.period, tr.period, tr.meas_cycles, 200)
+    vsh = resample(t, res.get(f"v({idx.node_bulk[0][0]})") - res.get(f"v({idx.node_sb[0]})"), t_u)
     sp = tr.model.cells[0].sheath_b
-    assert c.p_stoc_b > 0 and math.isclose(c.p_stoc_b, c.p_stoc_b, rel_tol=1e-9)
+    q = sp.charge(vsh)
+    h = harmonics(q, 200, 6)
+    q0, q1 = h.dc, h.amplitude(1)
+    assert h.amplitude(2) / q1 < 0.05, "charge oscillation should be nearly sinusoidal (sinusoidal current)"
+    x = vsh + sp.vmin
+    ratio = x.mean() / x.max()
+    predicted = (q0**2 + 0.5 * q1**2) / (q0 + q1) ** 2
+    assert abs(ratio - predicted) < 0.02, (ratio, predicted)
+    assert abs(po.power_balance_error) < 0.01
+    assert c.p_stoc_b > 0
 
 
 def test_v1_asymmetric_area_dc_bias(backend):
