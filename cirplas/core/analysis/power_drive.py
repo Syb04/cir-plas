@@ -37,9 +37,11 @@ def power_targets(project: Project) -> dict[str, float]:
 
 
 def _with_amplitudes(project: Project, amps: dict[str, float]) -> Project:
+    from ..project import set_source_field
+
     d = project.model_dump()
     for port, v in amps.items():
-        d["circuit"]["ports"][port]["sources"][0]["v"] = float(v)
+        set_source_field(d, port, 0, "v", float(v))
     return Project.model_validate(d)
 
 

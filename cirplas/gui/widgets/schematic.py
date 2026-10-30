@@ -1,61 +1,150 @@
-"""Editable schematic of the external circuit.
+"""Interactive schematic editor for the external circuit (Qucs-S style).
 
-The plasma / electrode ladder is generated from the physics model and shown as one block; everything
-around it (RF sources, generator and matching network, feed inductance, blocking and stray capacitors,
-focus-ring tuning, user-defined elements of ``circuit.extra_netlist``) is drawn as symbols that can be
-selected, edited in the property panel, added, and removed. All edits go through :class:`ProjectModel`
-so they are undoable and stay in sync with the form-based circuit panel.
+Components (R, L, C, RF source, DC source, ground, net label) are placed from the tool bar, moved by dragging,
+rotated with Ctrl+R and wired with the wire tool (orthogonal segments, click to add a corner, finish on a pin /
+wire or with a double click). The plasma block carries one pin per driven electrode (W, F, T) and is generated
+from the geometry; it can be moved but not deleted.
+
+The schematic is stored in ``circuit.schematic`` (grid units); every edit is one undoable model change. While the
+project still uses the port-chain description, the editor shows the equivalent schematic, and the first edit
+switches the project to ``circuit.mode = "schematic"``.
 """
 
 from __future__ import annotations
 
 import copy
 import math
-from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGraphicsItem, QGraphicsObject, QGraphicsScene,
-                               QGraphicsSimpleTextItem, QGraphicsView, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton,
-                               QScrollArea, QSplitter, QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt
+from PySide6.QtGui import QBrush, QColor, QFont, QIcon, QKeySequence, QPainter, QPainterPath, QPainterPathStroker, QPen, QPixmap, QShortcut
+from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFormLayout, QGraphicsEllipseItem, QGraphicsItem, QGraphicsObject,
+                               QGraphicsPathItem, QGraphicsScene, QGraphicsSimpleTextItem, QGraphicsView, QHBoxLayout, QHeaderView,
+                               QLabel, QLineEdit, QPushButton, QScrollArea, QSplitter, QTableWidget, QTableWidgetItem, QToolButton,
+                               QVBoxLayout, QWidget)
 
-from ...core.netlist.user_elements import KINDS, UNITS, UserElement, UserNetlist, format_eng
-from ...core.project import PortSpec, SourceSpec
+from ...core.netlist.user_elements import format_eng
+from ...core.project import CircuitSpec, Schematic
+from ...core.schematic import ELECTRODE_PIN_Y, default_schematic, extract, local_pins, on_segment, rotate, schematic_from_ports
 from .. import theme
 from ..project_model import ProjectModel
-from .paramform import BoundForm, SciSpin, _mark_invalid
+from .paramform import SciSpin, _mark_invalid
 
-U = 44.0  # grid unit [px]
-ELEMENT_LEN = 2 * U
-
-
-# ---------------------------------------------------------------------------- descriptors
-@dataclass
-class Field:
-    kind: str  # float | opt_float | int | choice | bool | info
-    label: str
-    path: str = ""
-    unit: str = ""
-    scale: float = 1.0
-    tooltip: str = ""
-    choices: list = field(default_factory=list)
-    getter: Optional[Callable[[], str]] = None
+G = 10.0  # pixels per grid unit
+UNITS = {"R": "Ω", "L": "H", "C": "F", "Vdc": "V"}
+TYPE_NAMES = {"R": "抵抗", "L": "インダクタ", "C": "コンデンサ", "Vrf": "RF 電源", "Vdc": "DC 電源", "GND": "接地", "Label": "ネットラベル",
+              "Plasma": "プラズマ・電極"}
+PLACEABLE = ("R", "L", "C", "Vrf", "Vdc", "GND", "Label")
+PREFIX = {"R": "R", "L": "L", "C": "C", "Vdc": "V", "Vrf": "V", "GND": "GND", "Label": "N", "Plasma": "PLASMA"}
+DEFAULTS = {"R": 50.0, "L": 100e-9, "C": 100e-12, "Vdc": 0.0}
+TOOLS = [("select", "選択", "Esc"), ("wire", "ワイヤ", "W"), ("R", "抵抗", ""), ("L", "インダクタ", ""), ("C", "コンデンサ", ""),
+         ("Vrf", "RF 電源", ""), ("Vdc", "DC 電源", ""), ("GND", "接地", ""), ("Label", "ネットラベル", "")]
 
 
-@dataclass
-class Descriptor:
-    id: str
-    title: str
-    description: str = ""
-    fields: list[Field] = field(default_factory=list)
-    user_index: Optional[int] = None  # index into UserNetlist.elements
-    actions: list = field(default_factory=list)  # (text, callable)
-    remove: Optional[Callable[[], None]] = None
-    remove_text: str = "削除"
+# ---------------------------------------------------------------------------- geometry helpers (dict based)
+def pin_points(c: dict, electrodes: list[str]) -> list[tuple[str, tuple[int, int]]]:
+    rot = 0 if c["type"] == "Plasma" else int(c.get("rot", 0))
+    out = []
+    for name, dx, dy in local_pins(c["type"], electrodes):
+        rx, ry = rotate(dx, dy, rot)
+        out.append((name, (int(c["x"]) + rx, int(c["y"]) + ry)))
+    return out
 
 
-# ---------------------------------------------------------------------------- graphics items
+def clean_points(pts) -> list[tuple[int, int]]:
+    """Drop repeated points and straight-through vertices."""
+    out: list[tuple[int, int]] = []
+    for p in pts:
+        p = (int(p[0]), int(p[1]))
+        if out and out[-1] == p:
+            continue
+        out.append(p)
+    k = 1
+    while k < len(out) - 1:
+        a, b, c = out[k - 1], out[k], out[k + 1]
+        cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])
+        dot = (b[0] - a[0]) * (c[0] - b[0]) + (b[1] - a[1]) * (c[1] - b[1])
+        if cross == 0 and dot >= 0:
+            del out[k]
+        else:
+            k += 1
+    return out
+
+
+def move_endpoint(pts: list[tuple[int, int]], end: int, new: tuple[int, int]) -> list[tuple[int, int]]:
+    """Move one end of an orthogonal polyline and keep it orthogonal by inserting an elbow."""
+    pts = [tuple(p) for p in pts]
+    if len(pts) < 2:
+        return pts
+    if end == 0:
+        return list(reversed(move_endpoint(list(reversed(pts)), -1, new)))
+    p, q = pts[-1], pts[-2]
+    horizontal = p[1] == q[1] and p[0] != q[0]
+    elbow = (new[0], q[1]) if horizontal else (q[0], new[1])
+    return clean_points(pts[:-1] + [elbow, new])
+
+
+def rubber_band(wires, moves: dict, fixed: set[int]) -> list[list[tuple[int, int]]]:
+    """Wire ends sitting on a moved pin follow it (wires listed in ``fixed`` are left alone)."""
+    out = []
+    for k, w in enumerate(wires):
+        w = [tuple(p) for p in w]
+        if k in fixed or not moves:
+            out.append(w)
+            continue
+        a, b = w[0], w[-1]
+        if a in moves and b in moves and (moves[a][0] - a[0], moves[a][1] - a[1]) == (moves[b][0] - b[0], moves[b][1] - b[1]):
+            d = (moves[a][0] - a[0], moves[a][1] - a[1])
+            out.append([(x + d[0], y + d[1]) for x, y in w])
+            continue
+        if a in moves:
+            w = move_endpoint(w, 0, moves[a])
+        if b in moves:
+            w = move_endpoint(w, -1, moves[b])
+        out.append(clean_points(w))
+    return out
+
+
+def next_id(comps: list[dict], ctype: str) -> str:
+    prefix = PREFIX[ctype]
+    used = {c["id"].upper() for c in comps}
+    k = 1
+    while f"{prefix}{k}".upper() in used:
+        k += 1
+    return f"{prefix}{k}"
+
+
+def new_component(comps: list[dict], ctype: str, x: int, y: int, rot: int = 0) -> dict:
+    c = {"id": next_id(comps, ctype), "type": ctype, "x": int(x), "y": int(y), "rot": int(rot) if ctype not in ("GND", "Label") else 0,
+         "value": DEFAULTS.get(ctype), "tones": [], "port": None, "label": None}
+    if ctype == "Vrf":
+        c["tones"] = [{"f": 13.56e6, "v": 100.0, "phase_deg": 0.0, "power": None}]
+    if ctype == "Label":
+        c["label"] = f"net{c['id'][1:]}"
+    return c
+
+
+def value_text(c: dict) -> str:
+    t = c["type"]
+    if t in UNITS:
+        return format_eng(c.get("value"), UNITS[t])
+    if t == "Vrf":
+        tones = c.get("tones") or []
+        parts = [f"{format_eng(s['f'], 'Hz')} {format_eng(s['v'], 'V')}" + (f" ({s['power']:.4g} W)" if s.get("power") else "") for s in tones[:2]]
+        return " + ".join(parts) + (" …" if len(tones) > 2 else "")
+    return ""
+
+
+def eng_text(v: float) -> str:
+    """Compact engineering notation accepted by SciSpin.parse (10n, 2.2u, 50, 1.5k)."""
+    if v == 0:
+        return "0"
+    for scale, suffix in ((1e9, "G"), (1e6, "M"), (1e3, "k"), (1.0, ""), (1e-3, "m"), (1e-6, "u"), (1e-9, "n"), (1e-12, "p")):
+        if abs(v) >= scale * 0.9999:
+            return f"{v / scale:.6g}{suffix}"
+    return f"{v:.6g}"
+
+
 def _font(size: int = 9, bold: bool = False) -> QFont:
     f = QFont()
     f.setFamilies(theme.UI_FONTS)
@@ -64,340 +153,429 @@ def _font(size: int = 9, bold: bool = False) -> QFont:
     return f
 
 
-def _text(scene: QGraphicsScene, s: str, x: float, y: float, color: str, size: int = 9, bold: bool = False, parent=None) -> QGraphicsSimpleTextItem:
-    it = QGraphicsSimpleTextItem(s, parent) if parent is not None else scene.addSimpleText(s)
-    it.setFont(_font(size, bold))
-    it.setBrush(QBrush(QColor(color)))
-    it.setPos(x, y)
-    return it
-
-
-class ElementItem(QGraphicsObject):
-    """Two-terminal symbol (R, L, C, Vac, Vdc, short) drawn from (0, 0) along +x (``h``) or +y (``v``)."""
-
-    double_clicked = Signal(object)
-
-    def __init__(self, symbol: str, orientation: str, desc: Descriptor, label: str, value: str, length: float = ELEMENT_LEN,
-                 label_side: str = "right"):
-        super().__init__()
-        self.symbol = symbol
-        self.orient = orientation
-        self.desc = desc
-        self.length = length
-        self.label_side = label_side  # vertical elements: labels to the right (default) or left
-        self._hover = False
-        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
-        self.setAcceptHoverEvents(True)
-        self.setZValue(5)
-        t = theme.tokens()
-        self.label = _text(None, label, 0, 0, t["text"], 9, True, parent=self)
-        self.value = _text(None, value, 0, 0, t["text_muted"], 8, False, parent=self)
-        self._place_labels()
-        tip = desc.description or desc.title
-        self.setToolTip(f"{desc.title}\n{tip}" if tip != desc.title else desc.title)
-
-    def _place_labels(self) -> None:
-        L = self.length
-        lw = self.label.boundingRect().width()
-        lh = self.label.boundingRect().height()
-        vw = self.value.boundingRect().width()
-        if self.orient == "h":
-            self.label.setPos(L / 2 - lw / 2, -0.55 * U - lh - 2)
-            self.value.setPos(L / 2 - vw / 2, 0.42 * U)
-        elif self.label_side == "left":
-            self.label.setPos(-0.5 * U - lw, L / 2 - 2)
-            self.value.setPos(-0.5 * U - vw, L / 2 + lh - 2)
+# ---------------------------------------------------------------------------- symbols
+def paint_symbol(p: QPainter, ctype: str, pen: QPen, fill: QColor, electrodes: Optional[list[str]] = None, text: str = "") -> None:
+    """Draw a symbol in local (unrotated) coordinates; pins as in core.schematic.local_pins."""
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    L = 3 * G
+    if ctype == "R":
+        p.drawLine(QPointF(-L, 0), QPointF(-1.5 * G, 0))
+        p.drawLine(QPointF(1.5 * G, 0), QPointF(L, 0))
+        p.setBrush(QBrush(fill))
+        p.drawRect(QRectF(-1.5 * G, -0.55 * G, 3 * G, 1.1 * G))
+    elif ctype == "L":
+        p.drawLine(QPointF(-L, 0), QPointF(-1.6 * G, 0))
+        p.drawLine(QPointF(1.6 * G, 0), QPointF(L, 0))
+        w = 3.2 * G / 4
+        path = QPainterPath(QPointF(-1.6 * G, 0))
+        for i in range(4):
+            path.arcTo(QRectF(-1.6 * G + i * w, -w / 2, w, w), 180, -180)
+        p.drawPath(path)
+    elif ctype == "C":
+        p.drawLine(QPointF(-L, 0), QPointF(-0.35 * G, 0))
+        p.drawLine(QPointF(0.35 * G, 0), QPointF(L, 0))
+        p.drawLine(QPointF(-0.35 * G, -1.1 * G), QPointF(-0.35 * G, 1.1 * G))
+        p.drawLine(QPointF(0.35 * G, -1.1 * G), QPointF(0.35 * G, 1.1 * G))
+    elif ctype in ("Vrf", "Vdc"):
+        r = 1.3 * G
+        p.drawLine(QPointF(0, -L), QPointF(0, -r))
+        p.drawLine(QPointF(0, r), QPointF(0, L))
+        p.setBrush(QBrush(fill))
+        p.drawEllipse(QPointF(0, 0), r, r)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        if ctype == "Vrf":
+            path = QPainterPath(QPointF(-0.8 * G, 0))
+            for k in range(1, 17):
+                x = -0.8 * G + 1.6 * G * k / 16
+                path.lineTo(QPointF(x, -0.5 * G * math.sin(2 * math.pi * k / 16)))
+            p.drawPath(path)
         else:
-            self.label.setPos(0.5 * U, L / 2 - 2)
-            self.value.setPos(0.5 * U, L / 2 + lh - 2)
+            p.drawLine(QPointF(-0.35 * G, -0.55 * G), QPointF(0.35 * G, -0.55 * G))
+            p.drawLine(QPointF(0, -0.9 * G), QPointF(0, -0.2 * G))
+            p.drawLine(QPointF(-0.35 * G, 0.6 * G), QPointF(0.35 * G, 0.6 * G))
+        p.drawLine(QPointF(0.6 * G, -2.2 * G), QPointF(1.2 * G, -2.2 * G))  # "+" next to the positive pin
+        p.drawLine(QPointF(0.9 * G, -2.5 * G), QPointF(0.9 * G, -1.9 * G))
+    elif ctype == "GND":
+        p.drawLine(QPointF(0, 0), QPointF(0, 0.8 * G))
+        for i, w in enumerate((1.2 * G, 0.75 * G, 0.3 * G)):
+            p.drawLine(QPointF(-w, 0.8 * G + i * 0.45 * G), QPointF(w, 0.8 * G + i * 0.45 * G))
+    elif ctype == "Label":
+        width = max(2.0 * G, 0.75 * G * len(text))
+        path = QPainterPath(QPointF(0, 0))
+        path.lineTo(QPointF(0.6 * G, -0.6 * G))
+        path.lineTo(QPointF(0.6 * G + width, -0.6 * G))
+        path.lineTo(QPointF(0.6 * G + width, -1.9 * G))
+        path.lineTo(QPointF(0.6 * G, -1.9 * G))
+        path.lineTo(QPointF(0.6 * G, -0.6 * G))
+        p.drawPath(path)
+        if text:
+            p.setFont(_font(8, True))
+            p.drawText(QRectF(0.75 * G, -1.95 * G, width + 2 * G, 1.4 * G), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
+    elif ctype == "Plasma":
+        els = electrodes or ["W"]
+        for e in els:
+            y = ELECTRODE_PIN_Y[e] * G
+            p.drawLine(QPointF(0, y), QPointF(2 * G, y))
+        p.setBrush(QBrush(fill))
+        p.drawRoundedRect(QRectF(2 * G, -8 * G, 12 * G, 16 * G), 8, 8)
+        p.setFont(_font(8, True))
+        for e in els:
+            y = ELECTRODE_PIN_Y[e] * G
+            p.drawText(QRectF(2.4 * G, y - 0.8 * G, 2 * G, 1.6 * G), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, e)
+        p.drawText(QRectF(4.5 * G, -7.5 * G, 9 * G, 2 * G), Qt.AlignmentFlag.AlignLeft, "プラズマ")
+        p.setFont(_font(7))
+        lines = ["電極ラダー（自動生成）"] + [{"W": "W: ウェハ電極", "F": "F: FR 電極", "T": "T: 上部電極"}[e] for e in els]
+        for i, line in enumerate(lines):
+            p.drawText(QRectF(4.5 * G, (-5.3 + 1.5 * i) * G, 9.4 * G, 1.5 * G), Qt.AlignmentFlag.AlignLeft, line)
+
+
+def symbol_rect(ctype: str, text: str = "") -> QRectF:
+    if ctype in ("R", "L", "C"):
+        return QRectF(-3 * G - 2, -1.4 * G, 6 * G + 4, 2.8 * G)
+    if ctype in ("Vrf", "Vdc"):
+        return QRectF(-1.6 * G, -3 * G - 2, 3.2 * G, 6 * G + 4)
+    if ctype == "GND":
+        return QRectF(-1.4 * G, -0.4 * G, 2.8 * G, 2.2 * G)
+    if ctype == "Label":
+        return QRectF(-0.4 * G, -2.2 * G, 1.6 * G + max(2.0 * G, 0.75 * G * len(text)) + 0.4 * G, 2.6 * G)
+    return QRectF(-0.4 * G, -8.4 * G, 14.8 * G, 16.8 * G)
+
+
+def tool_icon(tool: str, size: int = 28) -> QIcon:
+    t = theme.tokens()
+    pm = QPixmap(size * 2, size * 2)
+    pm.setDevicePixelRatio(2.0)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(t["text"]), 1.2)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    p.setPen(pen)
+    if tool == "select":
+        path = QPainterPath(QPointF(9, 6))
+        for x, y in ((9, 21), (13, 17), (16, 23), (18.5, 22), (15.5, 16), (21, 16)):
+            path.lineTo(QPointF(x, y))
+        path.closeSubpath()
+        p.setBrush(QBrush(QColor(t["text"])))
+        p.drawPath(path)
+    elif tool == "wire":
+        pen.setWidthF(1.8)
+        p.setPen(pen)
+        p.drawPolyline([QPointF(5, 8), QPointF(14, 8), QPointF(14, 20), QPointF(23, 20)])
+        p.setBrush(QBrush(QColor(t["accent"])))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(QPointF(5, 8), 2.2, 2.2)
+        p.drawEllipse(QPointF(23, 20), 2.2, 2.2)
+    else:
+        s = size / (7.0 * G)
+        if tool == "GND":
+            p.translate(size / 2, size / 2 - 0.9 * G * s * 1.6)
+            s *= 1.6
+        elif tool == "Label":
+            p.translate(size / 2 - size / 3, size / 2 + size / 5)
+            s *= 1.3
+        else:
+            p.translate(size / 2, size / 2)
+        p.scale(s, s)
+        paint_symbol(p, tool, QPen(QColor(t["text"]), 1.3 / s), QColor(t["surface"]), text="ab" if tool == "Label" else "")
+    p.end()
+    return QIcon(pm)
+
+
+def _inverse_rotate(x: float, y: float, rot: int) -> tuple[float, float]:
+    for _ in range(((360 - rot) // 90) % 4):
+        x, y = -y, x
+    return x, y
+
+
+# ---------------------------------------------------------------------------- items
+class CompItem(QGraphicsObject):
+    def __init__(self, editor: "CircuitEditor", comp: dict, ghost: bool = False):
+        super().__init__()
+        self.editor = editor
+        self.comp = comp
+        self.ghost = ghost
+        self.text = (comp.get("label") or "") if comp["type"] == "Label" else ""
+        self._hover = False
+        self.setPos(comp["x"] * G, comp["y"] * G)
+        if comp["type"] not in ("Plasma", "Label", "GND"):
+            self.setRotation(int(comp.get("rot", 0)))
+        if ghost:
+            self.setOpacity(0.55)
+            self.setZValue(20)
+            self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        else:
+            self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+            self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+            self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
+            self.setZValue(5)
+            self.setAcceptHoverEvents(True)
+        self._labels()
+
+    def _labels(self) -> None:
+        c = self.comp
+        if c["type"] in ("GND", "Label", "Plasma"):
+            return
+        t = theme.tokens()
+        rot = int(c.get("rot", 0))
+        vertical = (rot in (90, 270)) if c["type"] in ("R", "L", "C") else (rot in (0, 180))
+        name = QGraphicsSimpleTextItem(c["id"], self)
+        name.setFont(_font(8, True))
+        name.setBrush(QBrush(QColor(t["text"])))
+        val = QGraphicsSimpleTextItem(value_text(c), self)
+        val.setFont(_font(8))
+        val.setBrush(QBrush(QColor(t["text_muted"])))
+        nb, vb = name.boundingRect(), val.boundingRect()
+        if vertical:
+            offs = ((1.8 * G, -nb.height()), (1.8 * G, 0.0))
+        else:
+            offs = ((-nb.width() / 2, -1.5 * G - nb.height()), (-vb.width() / 2, 1.3 * G))
+        for item, (sx, sy) in zip((name, val), offs):
+            item.setPos(*_inverse_rotate(sx, sy, rot))
+            item.setRotation(-rot)
 
     def boundingRect(self) -> QRectF:
-        if self.orient == "h":
-            return QRectF(-2, -0.6 * U, self.length + 4, 1.2 * U)
-        return QRectF(-0.6 * U, -2, 1.2 * U, self.length + 4).united(self.childrenBoundingRect())
+        return symbol_rect(self.comp["type"], self.text)
 
     def shape(self) -> QPainterPath:
-        p = QPainterPath()
-        a = (self.length - 0.9 * U) / 2 - 4
-        if self.orient == "h":
-            p.addRect(QRectF(a, -0.45 * U, self.length - 2 * a, 0.9 * U))
-        else:
-            p.addRect(QRectF(-0.45 * U, a, 0.9 * U, self.length - 2 * a))
-        return p
+        path = QPainterPath()
+        path.addRect(symbol_rect(self.comp["type"], self.text))
+        return path
 
     def hoverEnterEvent(self, event):
         self._hover = True
         self.update()
-        super().hoverEnterEvent(event)
 
     def hoverLeaveEvent(self, event):
         self._hover = False
         self.update()
-        super().hoverLeaveEvent(event)
+
+    def itemChange(self, change, value):
+        if not self.ghost:
+            if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange:
+                return QPointF(round(value.x() / G) * G, round(value.y() / G) * G)
+            if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
+                self.editor.on_item_moved()
+        return super().itemChange(change, value)
 
     def mouseDoubleClickEvent(self, event):
-        self.double_clicked.emit(self)
-        super().mouseDoubleClickEvent(event)
+        self.editor.focus_properties(self.comp["id"])
 
     def paint(self, painter: QPainter, option, widget=None) -> None:
         t = theme.tokens()
-        color = t["accent"] if self.isSelected() else (t["accent_text"] if self._hover else t["text"])
-        pen = QPen(QColor(color), 2.2 if self.isSelected() else 1.6)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        sel = self.isSelected()
+        if sel or self._hover:
+            halo = QColor(t["accent"])
+            halo.setAlpha(36 if sel else 18)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(halo)
+            painter.drawRoundedRect(symbol_rect(self.comp["type"], self.text), 6, 6)
+        pen = QPen(QColor(t["accent"] if (sel or self.ghost) else t["text"]), 2.0 if sel else 1.5)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        paint_symbol(painter, self.comp["type"], pen, QColor(t["surface"]), self.editor.electrodes, self.text)
+
+
+class WireItem(QGraphicsPathItem):
+    def __init__(self, editor: "CircuitEditor", index: int, points):
+        super().__init__()
+        self.editor = editor
+        self.index = index
+        self.points = [tuple(p) for p in points]
+        self.set_points(self.points)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges, True)
+        self.setZValue(3)
+
+    def set_points(self, pts) -> None:
+        path = QPainterPath(QPointF(pts[0][0] * G, pts[0][1] * G))
+        for x, y in pts[1:]:
+            path.lineTo(QPointF(x * G, y * G))
+        self.setPath(path)
+
+    def shape(self) -> QPainterPath:
+        s = QPainterPathStroker()
+        s.setWidth(8)
+        return s.createStroke(self.path())
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange:
+            return QPointF(round(value.x() / G) * G, round(value.y() / G) * G)
+        if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
+            self.editor.on_item_moved()
+        return super().itemChange(change, value)
+
+    def paint(self, painter: QPainter, option, widget=None) -> None:
+        t = theme.tokens()
+        pen = QPen(QColor(t["accent"] if self.isSelected() else t["info"]), 2.2 if self.isSelected() else 1.6)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.save()
-        if self.orient == "v":
-            painter.rotate(90)  # +x -> +y
-        if self.isSelected() or self._hover:
-            halo = QColor(t["accent"])
-            halo.setAlpha(28 if self.isSelected() else 16)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(halo)
-            painter.drawRoundedRect(QRectF(0.2 * U, -0.5 * U, self.length - 0.4 * U, 1.0 * U), 8, 8)
-        _draw_symbol(painter, self.symbol, self.length, pen, QColor(t["surface"]))
-        painter.restore()
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(self.path())
 
 
-def _draw_symbol(p: QPainter, symbol: str, L: float, pen: QPen, fill: QColor) -> None:
-    p.setPen(pen)
-    p.setBrush(Qt.BrushStyle.NoBrush)
-    if symbol in ("short", "wire"):
-        p.drawLine(QPointF(0, 0), QPointF(L, 0))
-        if symbol == "short":
-            p.setBrush(QBrush(pen.color()))
-            p.drawEllipse(QPointF(L / 2, 0), 3.0, 3.0)
-        return
-    body = 0.9 * U
-    a = (L - body) / 2
-    p.drawLine(QPointF(0, 0), QPointF(a, 0))
-    p.drawLine(QPointF(L - a, 0), QPointF(L, 0))
-    if symbol == "R":
-        p.setBrush(QBrush(fill))
-        p.drawRoundedRect(QRectF(a, -0.18 * U, body, 0.36 * U), 3, 3)
-    elif symbol == "L":
-        n = 4
-        w = body / n
-        path = QPainterPath(QPointF(a, 0))
-        for i in range(n):
-            path.arcTo(QRectF(a + i * w, -w / 2, w, w), 180, -180)
-        p.drawPath(path)
-    elif symbol == "C":
-        gap = 0.22 * U
-        xm = L / 2
-        p.drawLine(QPointF(a, 0), QPointF(xm - gap / 2, 0))
-        p.drawLine(QPointF(xm + gap / 2, 0), QPointF(L - a, 0))
-        p.drawLine(QPointF(xm - gap / 2, -0.34 * U), QPointF(xm - gap / 2, 0.34 * U))
-        p.drawLine(QPointF(xm + gap / 2, -0.34 * U), QPointF(xm + gap / 2, 0.34 * U))
-    elif symbol in ("Vac", "Vdc"):
-        r = 0.4 * U
-        c = QPointF(L / 2, 0)
-        p.drawLine(QPointF(a, 0), QPointF(L / 2 - r, 0))
-        p.drawLine(QPointF(L / 2 + r, 0), QPointF(L - a, 0))
-        p.setBrush(QBrush(fill))
-        p.drawEllipse(c, r, r)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        if symbol == "Vac":
-            path = QPainterPath(QPointF(L / 2 - 0.26 * U, 0))
-            for k in range(1, 17):
-                x = -0.26 * U + 0.52 * U * k / 16
-                path.lineTo(QPointF(L / 2 + x, -0.18 * U * math.sin(2 * math.pi * k / 16)))
-            p.drawPath(path)
-        else:
-            # "+" at the first terminal, "-" at the second (local +x)
-            p.drawLine(QPointF(L / 2 - 0.18 * U, 0), QPointF(L / 2 - 0.06 * U, 0))
-            p.drawLine(QPointF(L / 2 - 0.12 * U, -0.06 * U), QPointF(L / 2 - 0.12 * U, 0.06 * U))
-            p.drawLine(QPointF(L / 2 + 0.06 * U, 0), QPointF(L / 2 + 0.18 * U, 0))
-
-
-class BlockItem(QGraphicsObject):
-    """The generated plasma / electrode ladder, shown as a selectable block."""
-
-    double_clicked = Signal(object)
-
-    def __init__(self, rect: QRectF, desc: Descriptor, title: str, lines: list[str]):
-        super().__init__()
-        self.rect = rect
-        self.desc = desc
-        self.title = title
-        self.lines = lines
-        self._hover = False
-        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
-        self.setAcceptHoverEvents(True)
-        self.setZValue(2)
-        self.setToolTip(desc.description)
-
-    def boundingRect(self) -> QRectF:
-        return self.rect.adjusted(-2, -2, 2, 2)
-
-    def hoverEnterEvent(self, event):
-        self._hover = True
-        self.update()
-
-    def hoverLeaveEvent(self, event):
-        self._hover = False
-        self.update()
-
-    def mouseDoubleClickEvent(self, event):
-        self.double_clicked.emit(self)
-
-    def paint(self, painter: QPainter, option, widget=None) -> None:
-        t = theme.tokens()
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        color = t["accent"] if (self.isSelected() or self._hover) else t["border"]
-        painter.setPen(QPen(QColor(color), 2 if self.isSelected() else 1.2))
-        painter.setBrush(QBrush(QColor(t["surface"])))
-        painter.drawRoundedRect(self.rect, 10, 10)
-        painter.setPen(QColor(t["text"]))
-        painter.setFont(_font(10, True))
-        x0, y0 = self.rect.left() + 12, self.rect.top() + 10
-        painter.drawText(QRectF(x0, y0, self.rect.width() - 24, 20), Qt.AlignmentFlag.AlignLeft, self.title)
-        painter.setFont(_font(8))
-        painter.setPen(QColor(t["text_muted"]))
-        y = y0 + 24
-        for line in self.lines:
-            painter.drawText(QRectF(x0, y, self.rect.width() - 24, 16), Qt.AlignmentFlag.AlignLeft, line)
-            y += 15
-
-
-class SchematicView(QGraphicsView):
-    context_requested = Signal(object, object)  # item (or None), global pos
-
-    def __init__(self, scene: QGraphicsScene, parent=None):
+class SchView(QGraphicsView):
+    def __init__(self, scene: "SchScene", parent=None):
         super().__init__(scene, parent)
         self.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.TextAntialiasing)
-        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
-        self._fit_pending = True
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._pan: Optional[QPointF] = None
+        self._fitted = False
 
     def wheelEvent(self, event):
         factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
-        if 0.25 < self.transform().m11() * factor < 4.0:
+        if 0.2 < self.transform().m11() * factor < 6.0:
             self.scale(factor, factor)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self._pan = event.position()
+            self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._pan is not None:
+            d = event.position() - self._pan
+            self._pan = event.position()
+            self.horizontalScrollBar().setValue(int(self.horizontalScrollBar().value() - d.x()))
+            self.verticalScrollBar().setValue(int(self.verticalScrollBar().value() - d.y()))
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.MiddleButton and self._pan is not None:
+            self._pan = None
+            self.viewport().unsetCursor()
+            return
+        super().mouseReleaseEvent(event)
 
     def drawBackground(self, painter: QPainter, rect: QRectF) -> None:
         t = theme.tokens()
         painter.fillRect(rect, QColor(t["bg"]))
-        dot = QColor(t["border"])
-        painter.setPen(QPen(dot, 1.5))
-        step = U / 2
-        x0 = math.floor(rect.left() / step) * step
-        y0 = math.floor(rect.top() / step) * step
+        if self.transform().m11() < 0.45:
+            return
+        painter.setPen(QPen(QColor(t["border"]), 1.4))
+        x0 = math.floor(rect.left() / G) * G
+        y0 = math.floor(rect.top() / G) * G
+        pts = []
         x = x0
         while x < rect.right():
             y = y0
             while y < rect.bottom():
-                painter.drawPoint(QPointF(x, y))
-                y += step
-            x += step
-
-    def contextMenuEvent(self, event):
-        item = self.itemAt(event.pos())
-        while item is not None and not isinstance(item, (ElementItem, BlockItem)):
-            item = item.parentItem()
-        self.context_requested.emit(item, event.globalPos())
+                pts.append(QPointF(x, y))
+                y += G
+            x += G
+        painter.drawPoints(pts)
 
     def fit(self) -> None:
-        rect = self.scene().itemsBoundingRect().adjusted(-U, -U, U, U)
+        rect = self.scene().itemsBoundingRect().adjusted(-4 * G, -4 * G, 4 * G, 4 * G)
         if rect.isEmpty():
             return
-        self.setSceneRect(rect)
+        self.setSceneRect(rect.adjusted(-80 * G, -80 * G, 80 * G, 80 * G))
         self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
-        if self.transform().m11() > 1.25:  # do not blow small circuits up
+        if self.transform().m11() > 1.6:
             self.resetTransform()
-            self.scale(1.25, 1.25)
+            self.scale(1.6, 1.6)
             self.centerOn(rect.center())
-        self._fit_pending = False
+        self._fitted = True
 
     def showEvent(self, event):
         super().showEvent(event)
-        if self._fit_pending:
+        if not self._fitted:
             self.fit()
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if self._fit_pending:
-            self.fit()
+
+class SchScene(QGraphicsScene):
+    def __init__(self, editor: "CircuitEditor"):
+        super().__init__(editor)
+        self.editor = editor
+
+    def mousePressEvent(self, event):
+        if self.editor.handle_press(event):
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        self.editor.handle_move(event)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        self.editor.handle_release(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if self.editor.handle_double_click(event):
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
 
 # ---------------------------------------------------------------------------- property panel
-class UserElementForm(QWidget):
-    def __init__(self, editor: "CircuitEditor", index: int, element: UserElement, nodes: list[str], parent=None):
-        super().__init__(parent)
-        self.editor = editor
-        self.index = index
+class TonesTable(QTableWidget):
+    def __init__(self, on_change: Callable[[list[dict]], None], parent=None):
+        super().__init__(0, 4, parent)
+        self.on_change = on_change
+        self.tones: list[dict] = []
+        self.setHorizontalHeaderLabels(["f [MHz]", "振幅 [V]", "位相 [deg]", "電力 [W]"])
+        self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.verticalHeader().setVisible(False)
+        self.setMinimumHeight(110)
         self._blocked = False
-        form = QFormLayout(self)
-        form.setContentsMargins(0, 0, 0, 0)
-        self.kind = QLabel(f"{KINDS[element.kind]} ({element.kind})")
-        self.name = QLineEdit(element.name)
-        self.n1 = QComboBox()
-        self.n2 = QComboBox()
-        for cb in (self.n1, self.n2):
-            cb.setEditable(True)
-            cb.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-            cb.addItems(nodes)
-        self.n1.setCurrentText(element.n1)
-        self.n2.setCurrentText(element.n2)
-        self.value = SciSpin(element.value)
-        form.addRow("種類", self.kind)
-        form.addRow("名前", self.name)
-        form.addRow("ノード 1", self.n1)
-        form.addRow("ノード 2", self.n2)
-        form.addRow(f"値 [{UNITS[element.kind]}]", self.value)
-        self.kind_letter = element.kind
-        self.name.editingFinished.connect(self._commit_name)
-        self.value.editingFinished.connect(self._commit_value)
-        for cb, key in ((self.n1, "n1"), (self.n2, "n2")):
-            cb.activated.connect(lambda _i, cb=cb, key=key: self._commit(**{key: cb.currentText().strip()}))
-            cb.lineEdit().editingFinished.connect(lambda cb=cb, key=key: self._commit(**{key: cb.currentText().strip()}))
-        if element.tail:
-            form.addRow("追加パラメータ", QLabel(element.tail))
+        self.cellChanged.connect(self._changed)
 
-    def _commit_name(self) -> None:
-        name = self.name.text().strip()
-        ok = len(name) > 1 and name[0].upper() == self.kind_letter and " " not in name
-        _mark_invalid(self.name, not ok)
-        if ok:
-            self._commit(name=name)
-
-    def _commit_value(self) -> None:
-        try:
-            v = self.value.value()
-        except ValueError:
-            _mark_invalid(self.value, True)
-            return
-        ok = v > 0 or self.kind_letter == "V"
-        _mark_invalid(self.value, not ok)
-        if ok:
-            self._commit(value=v)
-
-    def _commit(self, **changes) -> None:
-        if self._blocked or not changes:
-            return
-        self.editor.update_user_element(self.index, **changes)
-
-    def update_from(self, element: UserElement, nodes: list[str]) -> None:
+    def set_tones(self, tones: list[dict]) -> None:
         self._blocked = True
-        try:
-            if not self.name.hasFocus():
-                self.name.setText(element.name)
-            for cb, n in ((self.n1, element.n1), (self.n2, element.n2)):
-                cur = [cb.itemText(i) for i in range(cb.count())]
-                if cur != nodes:
-                    cb.clear()
-                    cb.addItems(nodes)
-                if not cb.hasFocus():
-                    cb.setCurrentText(n)
-            if not self.value.hasFocus():
-                self.value.set_value(element.value)
-        finally:
-            self._blocked = False
+        self.tones = copy.deepcopy(tones)
+        self.setRowCount(len(tones))
+        for r, s in enumerate(tones):
+            self.setItem(r, 0, QTableWidgetItem(f"{s['f'] / 1e6:.6g}"))
+            self.setItem(r, 1, QTableWidgetItem(f"{s['v']:.6g}"))
+            self.setItem(r, 2, QTableWidgetItem(f"{s.get('phase_deg', 0.0):.6g}"))
+            self.setItem(r, 3, QTableWidgetItem("" if s.get("power") is None else f"{s['power']:.6g}"))
+        self._blocked = False
 
-    def focus_first(self) -> None:
-        self.value.setFocus()
-        self.value.selectAll()
+    def _changed(self, row: int, col: int) -> None:
+        if self._blocked:
+            return
+        text = self.item(row, col).text().strip()
+        key = ["f", "v", "phase_deg", "power"][col]
+        if col == 3 and text == "":
+            val = None
+        else:
+            try:
+                val = SciSpin.parse(text)
+            except ValueError:
+                return
+            if key == "f":
+                val *= 1e6
+            if (key in ("f", "power") and val <= 0) or (key == "v" and val < 0):
+                return
+        self.tones[row][key] = val
+        self.on_change(copy.deepcopy(self.tones))
+
+
+DESCRIPTIONS = {
+    "R": "抵抗。外部回路の損失は電力収支に含めて集計されます。",
+    "L": "インダクタ。",
+    "C": "コンデンサ。電極との間に直列に入ると直流が遮断され、その電極に自己バイアスが立ちます。",
+    "Vrf": "RF 電圧源（複数行で多周波）。+ 側のピンが上。電力 [W] を入れると供給電力が一定になるよう振幅を反復します。",
+    "Vdc": "直流電圧源。+ 側のピンが上。0 V にすると短絡（電流プローブ）として使えます。",
+    "GND": "接地（ノード 0）。",
+    "Label": "ネットラベル。同じ名前のラベルどうしは接続され、追加ネットリストからは u_<名前> で参照できます。",
+    "Plasma": "物理モデルから生成される電極・プラズマのラダー回路。ピンは幾何で定義された電極（W、独立 FR なら F、駆動上部電極なら T）で、"
+              "電極電流はピンのところで測ります。移動のみ可能です。",
+}
 
 
 class PropertyPanel(QWidget):
@@ -407,7 +585,7 @@ class PropertyPanel(QWidget):
         self.setProperty("surface", "true")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(10, 10, 10, 10)
-        self.title = QLabel("外部回路")
+        self.title = QLabel("")
         self.title.setProperty("role", "heading")
         self.title.setWordWrap(True)
         self.desc = QLabel("")
@@ -415,204 +593,232 @@ class PropertyPanel(QWidget):
         self.desc.setWordWrap(True)
         lay.addWidget(self.title)
         lay.addWidget(self.desc)
-        self.body = QVBoxLayout()
-        self.body.setContentsMargins(0, 6, 0, 0)
-        lay.addLayout(self.body)
-        self.remove_btn = QPushButton("削除")
-        self.remove_btn.setVisible(False)
-        lay.addWidget(self.remove_btn)
+        self.body = QWidget()
+        self.form = QFormLayout(self.body)
+        self.form.setContentsMargins(0, 6, 0, 0)
+        lay.addWidget(self.body)
+        self.buttons = QHBoxLayout()
+        lay.addLayout(self.buttons)
         lay.addStretch(1)
         self.notes = QLabel("")
-        self.notes.setProperty("role", "muted")
         self.notes.setWordWrap(True)
+        self.notes.setTextFormat(Qt.TextFormat.RichText)
         lay.addWidget(self.notes)
-        self._form: Optional[QWidget] = None
-        self._desc: Optional[Descriptor] = None
-        self._sig: tuple = ()
-        self._remove_cb: Optional[Callable[[], None]] = None
-        self.remove_btn.clicked.connect(self._on_remove)
+        self.current: Optional[str] = None
+        self.first_field: Optional[QWidget] = None
+        self.value_edit: Optional[SciSpin] = None
+        self.tones_table: Optional[TonesTable] = None
+        self.nets_label: Optional[QLabel] = None
 
-    @property
-    def current_id(self) -> Optional[str]:
-        return self._desc.id if self._desc else None
-
-    def _clear_form(self) -> None:
-        if self._form is not None:
-            if isinstance(self._form, BoundForm):
-                self._form.detach()
-            self.body.removeWidget(self._form)
-            self._form.hide()
-            self._form.setParent(None)
-            self._form.deleteLater()
-            self._form = None
-
-    def show_default(self, summary: str, notes: str) -> None:
-        self._clear_form()
-        self._desc = None
-        self.title.setText("外部回路")
-        self.desc.setText(summary)
-        self.remove_btn.setVisible(False)
-        self.notes.setText(notes)
-
-    def show_descriptor(self, desc: Descriptor, netlist: UserNetlist, nodes: list[str]) -> None:
-        sig = tuple((f.kind, f.path) for f in desc.fields)
-        same = self._desc is not None and self._desc.id == desc.id and self._form is not None
-        if same and isinstance(self._form, UserElementForm) and desc.user_index is not None:
-            self._form.update_from(netlist.elements[desc.user_index], nodes)
-            self._desc = desc
-            self.desc.setText(desc.description)
-            self._bind_remove(desc)
-            return
-        if same and isinstance(self._form, BoundForm) and sig == self._sig:
-            self._desc = desc
-            self._bind_remove(desc)
-            return
-        self._clear_form()
-        self._desc = desc
-        self._sig = sig
-        self.title.setText(desc.title)
-        self.desc.setText(desc.description)
-        if desc.user_index is not None:
-            self._form = UserElementForm(self.editor, desc.user_index, netlist.elements[desc.user_index], nodes)
-        else:
-            f = BoundForm(self.editor.model)
-            for fd in desc.fields:
-                if fd.kind == "float":
-                    f.add_float(fd.label, fd.path, fd.unit, fd.scale, fd.tooltip)
-                elif fd.kind == "opt_float":
-                    f.add_optional_float(fd.label, fd.path, fd.unit, fd.scale, fd.tooltip)
-                elif fd.kind == "int":
-                    f.add_int(fd.label, fd.path, 1, 100000, fd.tooltip)
-                elif fd.kind == "choice":
-                    f.add_choice(fd.label, fd.path, fd.choices, fd.tooltip)
-                elif fd.kind == "bool":
-                    f.add_bool(fd.label, fd.path, fd.tooltip)
-                elif fd.kind == "info":
-                    f.add_info(fd.label, fd.getter or (lambda: ""))
-            f.form.setContentsMargins(0, 0, 0, 0)
-            self._form = f
-        self.body.addWidget(self._form)
-        self._bind_remove(desc)
+    def _reset(self) -> None:
+        while self.form.rowCount():
+            self.form.removeRow(0)
+        while self.buttons.count():
+            w = self.buttons.takeAt(0).widget()
+            if w is not None:
+                w.hide()
+                w.setParent(None)
+                w.deleteLater()
+        self.first_field = self.value_edit = self.tones_table = self.nets_label = None
         self.notes.setText("")
 
-    def _bind_remove(self, desc: Descriptor) -> None:
-        self._remove_cb = desc.remove
-        self.remove_btn.setVisible(desc.remove is not None)
-        self.remove_btn.setText(desc.remove_text)
+    def _button(self, text: str, slot) -> None:
+        b = QPushButton(text)
+        b.clicked.connect(slot)
+        self.buttons.addWidget(b)
 
-    def _on_remove(self) -> None:
-        if self._remove_cb is not None:
-            self._remove_cb()
+    def show_none(self, summary: str, notes_html: str) -> None:
+        self._reset()
+        self.current = None
+        self.title.setText("外部回路（回路図）")
+        self.desc.setText(summary)
+        self.notes.setText(notes_html)
+
+    def show_multi(self, n_comp: int, n_wire: int) -> None:
+        self._reset()
+        self.current = None
+        self.title.setText(f"部品 {n_comp} 個・ワイヤ {n_wire} 本を選択中")
+        self.desc.setText("ドラッグで移動、Ctrl+R で回転、Delete で削除します。")
+        self._button("回転 (Ctrl+R)", self.editor.rotate_selection)
+        self._button("削除 (Del)", self.editor.delete_selection)
+
+    def show_wire(self, index: int) -> None:
+        self._reset()
+        self.current = f"wire:{index}"
+        self.title.setText(f"ワイヤ {index + 1}")
+        self.desc.setText("端点がピンやほかのワイヤ上にあると接続されます。ドラッグで移動、Delete で削除します。")
+        self._button("削除 (Del)", self.editor.delete_selection)
+
+    def show_component(self, c: dict, electrodes: list[str], nets: dict[str, str]) -> None:
+        key = f"comp:{c['id']}:{c['type']}"
+        if self.current == key and self.nets_label is not None:
+            self._refresh(c, nets)
+            return
+        self._reset()
+        self.current = key
+        cid, t = c["id"], c["type"]
+        self.title.setText(f"{TYPE_NAMES[t]} {cid}")
+        self.desc.setText(DESCRIPTIONS[t])
+        if t not in ("Plasma", "GND"):
+            name = QLineEdit(cid)
+            name.editingFinished.connect(lambda: self._rename(cid, name))
+            self.form.addRow("名前", name)
+            self.first_field = name
+        if t in UNITS:
+            val = SciSpin()
+            val.setText(eng_text(float(c.get("value") or 0.0)))
+            val.setToolTip("工学表記も使えます（例: 2.2n, 300p, 1k）")
+            val.editingFinished.connect(lambda: self._set_value(cid, val, t))
+            self.form.addRow(f"値 [{UNITS[t]}]", val)
+            self.value_edit = val
+            self.first_field = val
+        if t == "Vrf":
+            table = TonesTable(lambda tones: self.editor.update_component(cid, tones=tones))
+            table.set_tones(c.get("tones") or [])
+            self.form.addRow(table)
+            row = QWidget()
+            hl = QHBoxLayout(row)
+            hl.setContentsMargins(0, 0, 0, 0)
+            b_add = QPushButton("周波数成分を追加")
+            b_del = QPushButton("選択行を削除")
+            b_add.clicked.connect(lambda: self.editor.update_component(cid, tones=list(table.tones) + [{"f": 2e6, "v": 100.0, "phase_deg": 0.0, "power": None}]))
+            b_del.clicked.connect(lambda: self._delete_tone(cid, table))
+            hl.addWidget(b_add)
+            hl.addWidget(b_del)
+            self.form.addRow(row)
+            port = QComboBox()
+            port.addItem("自動（最寄りの電極）", None)
+            for e in electrodes:
+                port.addItem(f"電極 {e}", e)
+            port.setCurrentIndex(max(0, port.findData(c.get("port"))))
+            port.currentIndexChanged.connect(lambda i: self.editor.update_component(cid, port=port.itemData(i)))
+            port.setToolTip("電源電力・ポート量をどの電極の結果として集計するか")
+            self.form.addRow("集計先の電極", port)
+            self.tones_table = table
+            self.first_field = table
+        if t == "Label":
+            lab = QLineEdit(c.get("label") or "")
+            lab.editingFinished.connect(lambda: self.editor.update_component(cid, label=lab.text().strip()) if lab.text().strip() else None)
+            self.form.addRow("ラベル名", lab)
+            self.first_field = lab
+        self.nets_label = QLabel("")
+        self.nets_label.setProperty("role", "muted")
+        self.nets_label.setWordWrap(True)
+        self.form.addRow("接続ノード", self.nets_label)
+        self._refresh(c, nets)
+        if t not in ("Plasma", "GND", "Label"):
+            self._button("回転 (Ctrl+R)", self.editor.rotate_selection)
+        if t != "Plasma":
+            self._button("削除 (Del)", self.editor.delete_selection)
+
+    def _refresh(self, c: dict, nets: dict[str, str]) -> None:
+        self.nets_label.setText(", ".join(f"{pin}: {net}" for pin, net in nets.items()) if nets else "—")
+        if self.value_edit is not None and not self.value_edit.hasFocus():
+            self.value_edit.setText(eng_text(float(c.get("value") or 0.0)))
+        if self.tones_table is not None and not self.tones_table.hasFocus():
+            self.tones_table.set_tones(c.get("tones") or [])
+
+    def _rename(self, cid: str, edit: QLineEdit) -> None:
+        new = edit.text().strip()
+        if new != cid:
+            _mark_invalid(edit, not self.editor.rename_component(cid, new))
+
+    def _set_value(self, cid: str, edit: SciSpin, t: str) -> None:
+        try:
+            v = edit.value()
+        except ValueError:
+            _mark_invalid(edit, True)
+            return
+        ok = v > 0 or t == "Vdc"
+        _mark_invalid(edit, not ok)
+        if ok:
+            self.editor.update_component(cid, value=v)
+
+    def _delete_tone(self, cid: str, table: TonesTable) -> None:
+        row = table.currentRow()
+        tones = list(table.tones)
+        if 0 <= row < len(tones) and len(tones) > 1:
+            del tones[row]
+            self.editor.update_component(cid, tones=tones)
 
     def focus_first(self) -> None:
-        if isinstance(self._form, UserElementForm):
-            self._form.focus_first()
-        elif isinstance(self._form, BoundForm):
-            for i in range(self._form.form.rowCount()):
-                it = self._form.form.itemAt(i, QFormLayout.ItemRole.FieldRole)
-                if it is not None and it.widget() is not None and it.widget().isEnabled():
-                    it.widget().setFocus()
-                    if isinstance(it.widget(), QLineEdit):
-                        it.widget().selectAll()
-                    return
-
-
-class AddElementDialog(QDialog):
-    def __init__(self, netlist: UserNetlist, nodes: list[str], parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("素子を追加")
-        self.netlist = netlist
-        form = QFormLayout(self)
-        self.kind = QComboBox()
-        for k, label in KINDS.items():
-            self.kind.addItem(f"{label} ({k})", k)
-        self.kind.addItem("短絡（電流プローブ, V = 0）", "short")
-        self.name = QLineEdit()
-        self.n1 = QComboBox()
-        self.n2 = QComboBox()
-        for cb in (self.n1, self.n2):
-            cb.setEditable(True)
-            cb.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-            cb.addItems(nodes)
-        self.n1.setCurrentText(nodes[0] if nodes else "W")
-        self.n2.setCurrentText("0")
-        self.value = SciSpin(50.0)
-        self.unit = QLabel("Ω")
-        row = QWidget()
-        hl = QHBoxLayout(row)
-        hl.setContentsMargins(0, 0, 0, 0)
-        hl.addWidget(self.value, 1)
-        hl.addWidget(self.unit)
-        form.addRow("種類", self.kind)
-        form.addRow("名前", self.name)
-        form.addRow("ノード 1", self.n1)
-        form.addRow("ノード 2", self.n2)
-        form.addRow("値", row)
-        hint = QLabel("ノード: W / F / T は電極ポート、0 は接地。新しい中間ノードは u_ で始まる名前にします。")
-        hint.setProperty("role", "muted")
-        hint.setWordWrap(True)
-        form.addRow(hint)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
-        self.kind.currentIndexChanged.connect(self._kind_changed)
-        self._kind_changed()
-
-    def _kind_changed(self) -> None:
-        k = self.kind.currentData()
-        defaults = {"R": (50.0, "Ω"), "L": (100e-9, "H"), "C": (100e-12, "F"), "V": (0.0, "V"), "short": (0.0, "V")}
-        v, unit = defaults[k]
-        self.value.set_value(v)
-        self.value.setEnabled(k != "short")
-        self.unit.setText(unit)
-        self.name.setText(self.netlist.next_name("V" if k == "short" else k))
-
-    def result_spec(self) -> tuple[str, str, str, str, float]:
-        k = self.kind.currentData()
-        kind = "V" if k == "short" else k
-        value = 0.0 if k == "short" else self.value.value()
-        return kind, self.name.text().strip() or self.netlist.next_name(kind), self.n1.currentText().strip(), self.n2.currentText().strip(), value
+        if self.first_field is not None:
+            self.first_field.setFocus()
+            if isinstance(self.first_field, QLineEdit):
+                self.first_field.selectAll()
 
 
 # ---------------------------------------------------------------------------- editor
 class CircuitEditor(QWidget):
-    """Schematic editor widget (toolbar, canvas, property panel)."""
+    """Tool bar + canvas + property panel."""
 
     def __init__(self, model: ProjectModel, parent=None):
         super().__init__(parent)
         self.model = model
-        self.scene = QGraphicsScene(self)
-        self.view = SchematicView(self.scene)
-        self.props = PropertyPanel(self)
-        self.netlist = UserNetlist()
-        self._items: dict[str, QGraphicsObject] = {}
+        self.electrodes: list[str] = ["W"]
+        self.comps: list[dict] = []
+        self.wires: list[list[tuple[int, int]]] = []
+        self.extraction = None
+        self.problem_text: list[str] = []
+        self.tool = "select"
+        self.ghost: Optional[CompItem] = None
+        self.ghost_rot = 0
+        self.wire_points: list[tuple[int, int]] = []
+        self.wire_vertical_first = False
+        self.preview: Optional[QGraphicsPathItem] = None
+        self.marker: Optional[QGraphicsEllipseItem] = None
+        self._last_cursor = (0, 0)
+        self._drag: Optional[dict] = None
         self._building = False
-        self._selected_id: Optional[str] = None
+        self._pending_select: Optional[tuple[list[str], list[int]]] = None
+        self.comp_items: dict[str, CompItem] = {}
+        self.wire_items: list[WireItem] = []
+        self.scene = SchScene(self)
+        self.view = SchView(self.scene)
+        self.props = PropertyPanel(self)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        self.banner = QLabel("")
+        self.banner.setWordWrap(True)
+        self.banner.setProperty("role", "muted")
+        lay.addWidget(self.banner)
         bar = QHBoxLayout()
-        self.btn_add = QToolButton()
-        self.btn_add.setText("素子を追加")
-        self.btn_add.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.menu_add = QMenu(self)
-        self.btn_add.setMenu(self.menu_add)
-        self.btn_struct = QToolButton()
-        self.btn_struct.setText("構成")
-        self.btn_struct.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.menu_struct = QMenu(self)
-        self.menu_struct.aboutToShow.connect(lambda: self._fill_structure_menu(self.menu_struct))
-        self.btn_struct.setMenu(self.menu_struct)
-        self.btn_remove = QPushButton("削除")
-        self.btn_remove.setEnabled(False)
+        bar.setSpacing(2)
+        self.tool_group = QButtonGroup(self)
+        self.tool_group.setExclusive(True)
+        self.tool_buttons: dict[str, QToolButton] = {}
+        for tool, text, key in TOOLS:
+            b = QToolButton()
+            b.setCheckable(True)
+            b.setIcon(tool_icon(tool))
+            b.setIconSize(QSize(26, 26))
+            tip = text + (f"（{key}）" if key else "")
+            if tool == "wire":
+                tip += "\nクリックで開始・角を追加、ピンやワイヤ上で終了（ダブルクリックでも終了）\nSpace で折れ方向を切替、Esc で中止"
+            elif tool != "select":
+                tip += "\nクリックで配置、右クリックまたは Ctrl+R で回転、Esc で終了"
+            b.setToolTip(tip)
+            b.setText(text)
+            b.clicked.connect(lambda _c, t=tool: self.set_tool(t))
+            self.tool_group.addButton(b)
+            self.tool_buttons[tool] = b
+            bar.addWidget(b)
+            if tool == "wire":
+                bar.addSpacing(10)
+        self.tool_buttons["select"].setChecked(True)
+        bar.addSpacing(10)
+        self.btn_rotate = QPushButton("回転")
+        self.btn_delete = QPushButton("削除")
         self.btn_fit = QPushButton("全体表示")
-        self.hint = QLabel("クリックで選択 ・ ダブルクリックで編集 ・ 右クリックでメニュー")
-        self.hint.setProperty("role", "muted")
-        bar.addWidget(self.btn_add)
-        bar.addWidget(self.btn_struct)
-        bar.addWidget(self.btn_remove)
-        bar.addWidget(self.btn_fit)
+        self.btn_rotate.clicked.connect(self.rotate_selection)
+        self.btn_delete.clicked.connect(self.delete_selection)
+        self.btn_fit.clicked.connect(self.view.fit)
+        for b in (self.btn_rotate, self.btn_delete, self.btn_fit):
+            bar.addWidget(b)
         bar.addStretch(1)
+        self.hint = QLabel("")
+        self.hint.setProperty("role", "muted")
         bar.addWidget(self.hint)
         lay.addLayout(bar)
         split = QSplitter(Qt.Orientation.Horizontal)
@@ -621,665 +827,479 @@ class CircuitEditor(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setWidget(self.props)
         scroll.setMinimumWidth(300)
-        scroll.setMaximumWidth(420)
+        scroll.setMaximumWidth(440)
         split.addWidget(scroll)
         split.setStretchFactor(0, 1)
         split.setSizes([900, 340])
         lay.addWidget(split, 1)
-        self._fill_add_menu()
-        self.btn_remove.clicked.connect(self._remove_selected)
-        self.btn_fit.clicked.connect(self.view.fit)
+        for seq, slot in ((QKeySequence(QKeySequence.StandardKey.Delete), self.delete_selection), (QKeySequence("Backspace"), self.delete_selection),
+                          (QKeySequence("Ctrl+R"), self.rotate_selection), (QKeySequence("Escape"), self.escape),
+                          (QKeySequence("W"), lambda: self.set_tool("wire")), (QKeySequence("Space"), self.toggle_elbow),
+                          (QKeySequence("Ctrl+A"), self.select_all)):
+            sc = QShortcut(seq, self.view)
+            sc.setContext(Qt.ShortcutContext.WidgetShortcut)
+            sc.activated.connect(slot)
         self.scene.selectionChanged.connect(self._on_selection)
-        self.view.context_requested.connect(self._context_menu)
-        model.changed.connect(self.rebuild)
-        theme.manager().changed.connect(self._on_theme_changed)
-        self.rebuild()
+        model.changed.connect(self.reload)
+        theme.manager().changed.connect(self._on_theme)
+        self.reload()
+        self._update_hint()
 
-    def _on_theme_changed(self, _mode: str) -> None:
-        self.rebuild()
+    # ------------------------------------------------------------------ document
+    def is_schematic_mode(self) -> bool:
+        circ = self.model.data["circuit"]
+        return circ.get("mode", "ports") == "schematic" and bool(circ.get("schematic"))
 
-    # ------------------------------------------------------------------ helpers
-    def _data(self) -> dict:
-        return self.model.data
+    def _electrodes_from_data(self) -> list[str]:
+        d = self.model.data
+        conductors = {r.get("conductor") for r in d["geometry"]["regions"]}
+        return ["W"] + (["F"] if "F" in conductors else []) + (["T"] if d["geometry"].get("top", {}).get("conductor") == "driven" else [])
 
-    def _circuit(self) -> dict:
-        return self._data()["circuit"]
-
-    def fr_separate(self) -> bool:
-        return self._circuit().get("fr", {}).get("type") == "separate"
-
-    def top_driven(self) -> bool:
-        return self._data()["geometry"].get("top", {}).get("conductor") == "driven"
-
-    def available_nodes(self) -> list[str]:
-        nodes = ["W"]
-        if self.fr_separate():
-            nodes.append("F")
-        if self.top_driven():
-            nodes.append("T")
-        nodes.append("0")
-        nodes += [n for n in self.netlist.user_nodes() if n not in nodes]
-        nodes.append(self.netlist.next_node())
-        return nodes
-
-    def _set_netlist(self) -> None:
-        self.model.set("circuit.extra_netlist", self.netlist.to_text())
-
-    # ------------------------------------------------------------------ user elements API
-    def add_user_element(self, kind: str, n1: str, n2: str, value: float, name: Optional[str] = None) -> UserElement:
-        self.netlist = UserNetlist.parse(self._circuit().get("extra_netlist", "") or "")
-        el = self.netlist.add(kind, n1, n2, value, name)
-        self._selected_id = f"user.{self.netlist.index_of(el)}"
-        self._set_netlist()
-        return el
-
-    def update_user_element(self, index: int, **changes) -> None:
-        self.netlist = UserNetlist.parse(self._circuit().get("extra_netlist", "") or "")
-        els = self.netlist.elements
-        if not 0 <= index < len(els):
-            return
-        el = els[index]
-        for k, v in changes.items():
-            if v in (None, ""):
-                continue
-            if k == "name" and (len(v) < 2 or v[0].upper() != el.kind or " " in v):
-                continue
-            if k == "value" and el.kind != "V" and float(v) <= 0:
-                continue
-            if k in ("name", "n1", "n2", "value"):
-                setattr(el, k, v)
-        self.netlist.touch(el)
-        self._selected_id = f"user.{index}"
-        self._set_netlist()
-
-    def remove_user_element(self, index: int) -> None:
-        self.netlist = UserNetlist.parse(self._circuit().get("extra_netlist", "") or "")
-        els = self.netlist.elements
-        if 0 <= index < len(els):
-            self.netlist.remove(els[index])
-            self._selected_id = None
-            self._set_netlist()
-
-    # ------------------------------------------------------------------ structural edits
-    def _replace(self, mutate: Callable[[dict], None]) -> None:
-        data = copy.deepcopy(self._data())
-        mutate(data)
-        self.model.replace(data)
-
-    def toggle_l_feed(self, port: str = "W") -> None:
-        cur = float(self._circuit()["ports"][port].get("l_feed", 0.0) or 0.0)
-        self.model.set(f"circuit.ports.{port}.l_feed", 0.0 if cur > 0 else 20e-9)
-
-    def toggle_c_stray(self, port: str = "W") -> None:
-        cur = float(self._circuit()["ports"][port].get("c_stray", 0.0) or 0.0)
-        self.model.set(f"circuit.ports.{port}.c_stray", 0.0 if cur > 0 else 100e-12)
-
-    def toggle_blocking_c(self, port: str = "W") -> None:
-        cur = self._circuit()["ports"][port].get("blocking_c")
-        self.model.set(f"circuit.ports.{port}.blocking_c", None if cur is not None else 2e-9)
-
-    def toggle_generator(self, port: str = "W") -> None:
-        cur = self._circuit()["ports"][port].get("generator", {}).get("type", "none")
-        self.model.set(f"circuit.ports.{port}.generator.type", "none" if cur == "l_match" else "l_match")
-
-    def add_source(self, port: str) -> None:
-        srcs = list(self._circuit()["ports"][port].get("sources", []))
-        f = 2e6 if srcs else 60e6
-        srcs.append(SourceSpec(f=f, v=100.0).model_dump(mode="json"))
-        self.model.set(f"circuit.ports.{port}.sources", srcs)
-
-    def remove_source(self, port: str, index: int) -> None:
-        srcs = list(self._circuit()["ports"][port].get("sources", []))
-        if len(srcs) > 1 and 0 <= index < len(srcs):
-            del srcs[index]
-            self.model.set(f"circuit.ports.{port}.sources", srcs)
-
-    def set_top_driven(self, driven: bool) -> None:
-        def mutate(d: dict) -> None:
-            d["geometry"]["top"]["conductor"] = "driven" if driven else "ground"
-            ports = d["circuit"]["ports"]
-            if driven and "T" not in ports:
-                f = ports["W"]["sources"][0]["f"] if ports["W"].get("sources") else 60e6
-                ports["T"] = PortSpec(sources=[SourceSpec(f=f, v=100.0, phase_deg=180.0)], c_stray=0.0).model_dump(mode="json")
-            if not driven:
-                ports.pop("T", None)
-                if d["geometry"]["outer_boundary"].get("type") not in ("short", "open", "impedance"):
-                    d["geometry"]["outer_boundary"]["type"] = "short"
-
-        self._replace(mutate)
-
-    def set_fr_type(self, fr_type: str) -> None:
-        def mutate(d: dict) -> None:
-            d["circuit"]["fr"]["type"] = fr_type
-            regions = d["geometry"]["regions"]
-            if fr_type == "separate":
-                if not any(r.get("conductor") == "F" for r in regions):
-                    cand = next((r for r in regions if "fr" in r["name"].lower()), None)
-                    if cand is None and len(regions) > 1:
-                        cand = regions[1]
-                    if cand is not None:
-                        cand["conductor"] = "F"
-            else:
-                for r in regions:
-                    if r.get("conductor") == "F":
-                        r["conductor"] = "W"
-                d["circuit"]["ports"].pop("F", None)
-                if d["circuit"]["fr"]["tuning"].get("type") == "source":
-                    d["circuit"]["fr"]["tuning"]["type"] = "none"
-
-        self._replace(mutate)
-
-    def set_fr_tuning(self, tuning_type: str) -> None:
-        def mutate(d: dict) -> None:
-            t = d["circuit"]["fr"]["tuning"]
-            t["type"] = tuning_type
-            if tuning_type in ("cap_to_gnd", "series_lc_to_gnd", "coupling_to_w") and not t.get("c"):
-                t["c"] = 100e-12
-            if tuning_type == "series_lc_to_gnd" and not t.get("l"):
-                t["l"] = 1e-6
-            if tuning_type == "dc_bias":
-                t["l"] = t.get("l") or 1e-3
-                t["v_dc"] = t.get("v_dc") if t.get("v_dc") is not None else 0.0
-            ports = d["circuit"]["ports"]
-            if tuning_type == "source" and "F" not in ports:
-                f = ports["W"]["sources"][0]["f"] if ports["W"].get("sources") else 60e6
-                ports["F"] = PortSpec(sources=[SourceSpec(f=f, v=200.0)], blocking_c=2e-9).model_dump(mode="json")
-            if tuning_type != "source":
-                ports.pop("F", None)
-
-        self._replace(mutate)
-
-    def set_c_wf_manual(self, manual: bool) -> None:
-        def mutate(d: dict) -> None:
-            d["circuit"]["c_wf"]["mode"] = "manual" if manual else "auto"
-            if manual and not d["circuit"]["c_wf"].get("value"):
-                d["circuit"]["c_wf"]["value"] = 100e-12
-
-        self._replace(mutate)
-
-    # ------------------------------------------------------------------ menus
-    def _fill_add_menu(self) -> None:
-        m = self.menu_add
-        m.clear()
-        for k, label in KINDS.items():
-            m.addAction(f"{label} ({k})", lambda k=k: self._add_dialog(k))
-        m.addAction("短絡（電流プローブ）", lambda: self._add_dialog("short"))
-
-    def _add_dialog(self, kind: str) -> None:
-        dlg = AddElementDialog(self.netlist, self.available_nodes(), self)
-        idx = dlg.kind.findData(kind)
-        if idx >= 0:
-            dlg.kind.setCurrentIndex(idx)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
+    def _load_doc(self) -> None:
+        self.electrodes = self._electrodes_from_data()
+        circ = self.model.data["circuit"]
+        if self.is_schematic_mode():
+            sch = copy.deepcopy(circ["schematic"])
+        else:
             try:
-                k, name, n1, n2, value = dlg.result_spec()
-            except ValueError:
-                QMessageBox.warning(self, "素子を追加", "値を数値で入力してください（例: 100p, 2.2n, 50）。")
-                return
-            if not n1 or not n2 or n1 == n2:
-                QMessageBox.warning(self, "素子を追加", "両端のノードには異なる名前を指定してください。")
-                return
-            if k != "V" and value <= 0:
-                QMessageBox.warning(self, "素子を追加", "R / L / C の値は正の数にしてください。")
-                return
-            if name[0].upper() != k:
-                name = k + name[1:] if len(name) > 1 else self.netlist.next_name(k)
-            self.add_user_element(k, n1, n2, value, name)
+                spec = CircuitSpec.model_validate({k: v for k, v in circ.items() if k not in ("schematic", "mode")})
+                sch = schematic_from_ports(spec, self.electrodes).model_dump(mode="json")
+            except Exception:  # noqa: BLE001
+                sch = default_schematic(self.electrodes).model_dump(mode="json")
+        self.comps = [dict(c) for c in sch.get("components", [])]
+        for c in self.comps:
+            for k, v in (("rot", 0), ("value", None), ("tones", []), ("port", None), ("label", None)):
+                c.setdefault(k, v)
+        if not any(c["type"] == "Plasma" for c in self.comps):
+            self.comps.append({"id": "PLASMA", "type": "Plasma", "x": 40, "y": 0, "rot": 0, "value": None, "tones": [], "port": None, "label": None})
+        self.wires = [[tuple(p) for p in w["points"]] for w in sch.get("wires", [])]
 
-    def _fill_structure_menu(self, m: QMenu) -> None:
-        m.clear()
-        circ = self._circuit()
-        for port in ("W", "F", "T"):
-            if port not in circ["ports"]:
+    def _analyse(self) -> None:
+        self.extraction = None
+        self.problem_text = []
+        try:
+            sch = Schematic.model_validate({"components": self.comps, "wires": [{"points": w} for w in self.wires]})
+            self.extraction = extract(sch, self.electrodes)
+            self.problem_text = list(self.extraction.problems)
+        except Exception as exc:  # noqa: BLE001
+            lines = [ln.strip() for ln in str(exc).splitlines() if ln.strip()]
+            msg = next((ln for ln in lines if ln.startswith("Value error")), lines[-1] if lines else str(exc))
+            self.problem_text = [msg.replace("Value error, ", "").split(" [type=")[0]]
+
+    def schematic_dict(self) -> dict:
+        return {"components": copy.deepcopy(self.comps), "wires": [{"points": [list(p) for p in w]} for w in self.wires]}
+
+    def commit(self, comps: list[dict], wires, select_ids: Optional[list[str]] = None, select_wires: Optional[list[int]] = None) -> None:
+        d = copy.deepcopy(self.model.data)
+        circ = d["circuit"]
+        cleaned = [clean_points(w) for w in wires]
+        circ["schematic"] = {"components": copy.deepcopy(comps), "wires": [{"points": [list(p) for p in w]} for w in cleaned if len(w) >= 2]}
+        circ["mode"] = "schematic"
+        self._pending_select = (list(select_ids or []), list(select_wires or []))
+        self.model.replace(d)
+
+    # ------------------------------------------------------------------ scene
+    def reload(self) -> None:
+        if self._drag is not None and self._drag.get("moved"):
+            return
+        self._load_doc()
+        self._analyse()
+        self._rebuild()
+
+    def _on_theme(self, _mode: str) -> None:
+        for tool, b in self.tool_buttons.items():
+            b.setIcon(tool_icon(tool))
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        self._building = True
+        try:
+            sel_ids, sel_w = self.selected()
+            if self._pending_select is not None:
+                sel_ids, sel_w = self._pending_select
+                self._pending_select = None
+            self.ghost = self.preview = self.marker = None
+            self.scene.clear()
+            self.comp_items.clear()
+            self.wire_items = []
+            for k, w in enumerate(self.wires):
+                if len(w) >= 2:
+                    it = WireItem(self, k, w)
+                    self.scene.addItem(it)
+                    self.wire_items.append(it)
+            for c in self.comps:
+                it = CompItem(self, c)
+                self.scene.addItem(it)
+                self.comp_items[c["id"]] = it
+            self._decorations()
+            for cid in sel_ids:
+                if cid in self.comp_items:
+                    self.comp_items[cid].setSelected(True)
+            for it in self.wire_items:
+                if it.index in sel_w:
+                    it.setSelected(True)
+            if self.tool in PLACEABLE:
+                self._make_ghost()
+            if self.tool == "wire" and self.wire_points:
+                self._update_preview(self._last_cursor)
+        finally:
+            self._building = False
+        text = ("" if self.is_schematic_mode() else
+                "いまは「回路」タブの表形式（ポートごとの直列チェーン）で外部回路を定義しています。下の図はその等価回路です。"
+                "図を編集すると回路図モードに切り替わり、以後はこの回路図が解析に使われます（Ctrl+Z で戻せます）。")
+        self.banner.setText(text)
+        self.banner.setVisible(bool(text))
+        self._on_selection()
+
+    def _decorations(self) -> None:
+        t = theme.tokens()
+        ex = self.extraction
+        if ex is None:
+            return
+        for x, y in ex.junctions:
+            d = self.scene.addEllipse(x * G - 3.2, y * G - 3.2, 6.4, 6.4, QPen(Qt.PenStyle.NoPen), QBrush(QColor(t["info"])))
+            d.setZValue(6)
+            d.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        for net, members in ex.nets.items():  # open pins
+            if net == "0" or len(members) > 1:
                 continue
-            ps = circ["ports"][port]
-            sub = m.addMenu(f"ポート {port}")
-            a = sub.addAction("50 Ω 発振器 + L 型整合器")
-            a.setCheckable(True)
-            a.setChecked(ps.get("generator", {}).get("type") == "l_match")
-            a.triggered.connect(lambda _c, p=port: self.toggle_generator(p))
-            a = sub.addAction("給電インダクタンス L_feed")
-            a.setCheckable(True)
-            a.setChecked(float(ps.get("l_feed", 0) or 0) > 0)
-            a.triggered.connect(lambda _c, p=port: self.toggle_l_feed(p))
-            a = sub.addAction("ブロッキング容量 C_b")
-            a.setCheckable(True)
-            a.setChecked(ps.get("blocking_c") is not None)
-            a.triggered.connect(lambda _c, p=port: self.toggle_blocking_c(p))
-            a = sub.addAction("ストレイ容量 C_stray")
-            a.setCheckable(True)
-            a.setChecked(float(ps.get("c_stray", 0) or 0) > 0)
-            a.triggered.connect(lambda _c, p=port: self.toggle_c_stray(p))
-            sub.addSeparator()
-            sub.addAction("電源（周波数成分）を追加", lambda p=port: self.add_source(p))
-        m.addSeparator()
-        a = m.addAction("上部電極を駆動（ポート T）")
-        a.setCheckable(True)
-        a.setChecked(self.top_driven())
-        a.triggered.connect(lambda c: self.set_top_driven(bool(c)))
-        a = m.addAction("フォーカスリングを独立電極にする（ポート F）")
-        a.setCheckable(True)
-        a.setChecked(self.fr_separate())
-        a.triggered.connect(lambda c: self.set_fr_type("separate" if c else "esc_coupled"))
-        tune = m.addMenu("FR 調整回路")
-        tune.setEnabled(self.fr_separate())
-        cur = circ.get("fr", {}).get("tuning", {}).get("type", "none")
-        for value, text in FR_TUNING_CHOICES:
-            a = tune.addAction(text)
-            a.setCheckable(True)
-            a.setChecked(cur == value)
-            a.triggered.connect(lambda _c, v=value: self.set_fr_tuning(v))
-        a = m.addAction("W–F 間容量 C_WF を手動指定")
-        a.setCheckable(True)
-        a.setEnabled(self.fr_separate())
-        a.setChecked(circ.get("c_wf", {}).get("mode") == "manual")
-        a.triggered.connect(lambda c: self.set_c_wf_manual(bool(c)))
+            cid, pin = members[0]
+            comp = next((c for c in self.comps if c["id"] == cid), None)
+            if comp is None or comp["type"] == "Label":
+                continue
+            for name, (x, y) in pin_points(comp, self.electrodes):
+                if name == pin and not self._on_any_wire((x, y)):
+                    d = self.scene.addEllipse(x * G - 3, y * G - 3, 6, 6, QPen(QColor(t["error"]), 1.4), QBrush(Qt.BrushStyle.NoBrush))
+                    d.setZValue(7)
+                    d.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        plasma = next(c for c in self.comps if c["type"] == "Plasma")
+        for e in self.electrodes:  # net names at the electrode pins
+            item = QGraphicsSimpleTextItem(ex.electrode_net.get(e, ""))
+            item.setFont(_font(7))
+            item.setBrush(QBrush(QColor(t["text_muted"])))
+            br = item.boundingRect()
+            item.setPos(plasma["x"] * G - br.width() - 3, (plasma["y"] + ELECTRODE_PIN_Y[e]) * G - br.height() - 1)
+            item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            item.setZValue(4)
+            self.scene.addItem(item)
 
-    def _context_menu(self, item, global_pos) -> None:
-        menu = QMenu(self)
-        if item is not None:
-            item.setSelected(True)
-            desc = item.desc
-            menu.addAction("編集…", self.props.focus_first)
-            for text, fn in desc.actions:
-                menu.addAction(text, fn)
-            if desc.remove is not None:
-                menu.addAction(desc.remove_text, desc.remove)
-            menu.addSeparator()
-        add = menu.addMenu("素子を追加")
-        for k, label in KINDS.items():
-            add.addAction(f"{label} ({k})", lambda k=k: self._add_dialog(k))
-        add.addAction("短絡（電流プローブ）", lambda: self._add_dialog("short"))
-        struct = menu.addMenu("外部回路の構成")
-        self._fill_structure_menu(struct)
-        menu.addSeparator()
-        menu.addAction("全体表示", self.view.fit)
-        menu.exec(global_pos)
+    def _on_any_wire(self, pt: tuple[int, int]) -> bool:
+        for w in self.wires:
+            for a, b in zip(w, w[1:]):
+                if on_segment(pt, tuple(a), tuple(b)):
+                    return True
+        return False
 
-    def _remove_selected(self) -> None:
-        item = self._selected_item()
-        if item is not None and item.desc.remove is not None:
-            item.desc.remove()
+    def is_connection_point(self, pt: tuple[int, int]) -> bool:
+        for c in self.comps:
+            for _n, p in pin_points(c, self.electrodes):
+                if p == pt:
+                    return True
+        return self._on_any_wire(pt)
 
-    def _selected_item(self):
-        for it in self.scene.selectedItems():
-            if isinstance(it, (ElementItem, BlockItem)):
-                return it
-        return None
+    # ------------------------------------------------------------------ tools
+    def set_tool(self, tool: str) -> None:
+        self._cancel_wire()
+        if self.ghost is not None:
+            self.scene.removeItem(self.ghost)
+            self.ghost = None
+        if self.marker is not None:
+            self.scene.removeItem(self.marker)
+            self.marker = None
+        self.tool = tool
+        self.tool_buttons[tool].setChecked(True)
+        self.view.setDragMode(QGraphicsView.DragMode.RubberBandDrag if tool == "select" else QGraphicsView.DragMode.NoDrag)
+        self.view.viewport().setCursor(Qt.CursorShape.ArrowCursor if tool == "select" else Qt.CursorShape.CrossCursor)
+        if tool in PLACEABLE:
+            self.ghost_rot = 0
+            self._make_ghost()
+        self._update_hint()
+        self.view.setFocus()
 
+    def _update_hint(self) -> None:
+        hints = {"select": "クリックで選択・ドラッグで移動・ダブルクリックで編集・中ボタンでパン",
+                 "wire": "クリックで開始／角を追加・ピンやワイヤ上で終了・Space で折れ方向・Esc で中止"}
+        self.hint.setText(hints.get(self.tool, f"{TYPE_NAMES.get(self.tool, '')}: クリックで配置・右クリック／Ctrl+R で回転・Esc で終了"))
+
+    def _make_ghost(self) -> None:
+        c = new_component(self.comps, self.tool, self._last_cursor[0], self._last_cursor[1], self.ghost_rot)
+        self.ghost = CompItem(self, c, ghost=True)
+        self.scene.addItem(self.ghost)
+
+    def escape(self) -> None:
+        if self.tool == "wire" and self.wire_points:
+            self._cancel_wire()
+        elif self.tool != "select":
+            self.set_tool("select")
+        else:
+            self.scene.clearSelection()
+
+    def toggle_elbow(self) -> None:
+        self.wire_vertical_first = not self.wire_vertical_first
+        if self.wire_points:
+            self._update_preview(self._last_cursor)
+
+    def select_all(self) -> None:
+        for it in list(self.comp_items.values()) + self.wire_items:
+            it.setSelected(True)
+
+    # ------------------------------------------------------------------ mouse
+    def handle_press(self, event) -> bool:
+        pt = (round(event.scenePos().x() / G), round(event.scenePos().y() / G))
+        self._last_cursor = pt
+        if self.tool in PLACEABLE:
+            if event.button() == Qt.MouseButton.RightButton:
+                self.rotate_ghost()
+                return True
+            if event.button() == Qt.MouseButton.LeftButton:
+                self.place(self.tool, pt, self.ghost_rot)
+                return True
+            return False
+        if self.tool == "wire":
+            if event.button() == Qt.MouseButton.RightButton:
+                if len(self.wire_points) >= 2:
+                    self._finish_wire()
+                elif self.wire_points:
+                    self._cancel_wire()
+                else:
+                    self.set_tool("select")
+                return True
+            if event.button() == Qt.MouseButton.LeftButton:
+                self.wire_click(pt)
+                return True
+            return False
+        self._drag = {"moved": False} if event.button() == Qt.MouseButton.LeftButton else None
+        return False
+
+    def handle_move(self, event) -> None:
+        pt = (round(event.scenePos().x() / G), round(event.scenePos().y() / G))
+        self._last_cursor = pt
+        if self.ghost is not None:
+            self.ghost.setPos(pt[0] * G, pt[1] * G)
+        if self.tool == "wire":
+            self._update_marker(pt)
+            if self.wire_points:
+                self._update_preview(pt)
+
+    def on_item_moved(self) -> None:
+        if self._building or self._drag is None:
+            return
+        self._drag["moved"] = True
+        _comps, wires, fixed = self._dragged_state()
+        for it in self.wire_items:  # live rubber band on the wires that are not dragged themselves
+            if it.index not in fixed and it.index < len(wires) and len(wires[it.index]) >= 2:
+                it.set_points(wires[it.index])
+
+    def _dragged_state(self):
+        comps = copy.deepcopy(self.comps)
+        moves: dict[tuple[int, int], tuple[int, int]] = {}
+        for c in comps:
+            it = self.comp_items.get(c["id"])
+            if it is None:
+                continue
+            nx, ny = round(it.pos().x() / G), round(it.pos().y() / G)
+            if (nx, ny) != (c["x"], c["y"]):
+                old = pin_points(c, self.electrodes)
+                c["x"], c["y"] = nx, ny
+                for (_n, a), (_m, b) in zip(old, pin_points(c, self.electrodes)):
+                    moves.setdefault(a, b)
+        wires = [list(w) for w in self.wires]
+        fixed = set()
+        for it in self.wire_items:
+            dx, dy = round(it.pos().x() / G), round(it.pos().y() / G)
+            if (dx, dy) != (0, 0):
+                wires[it.index] = [(x + dx, y + dy) for x, y in wires[it.index]]
+                fixed.add(it.index)
+        return comps, rubber_band(wires, moves, fixed), fixed
+
+    def handle_release(self, event) -> None:
+        drag, self._drag = self._drag, None
+        if drag is None or not drag["moved"]:
+            return
+        comps, wires, _fixed = self._dragged_state()
+        cids, wids = self.selected()
+        self.commit(comps, wires, select_ids=cids, select_wires=wids)
+
+    def handle_double_click(self, event) -> bool:
+        if self.tool == "wire":
+            if len(self.wire_points) >= 2:
+                self._finish_wire()
+            return True
+        return self.tool in PLACEABLE
+
+    # ------------------------------------------------------------------ placing
+    def place(self, ctype: str, pt: tuple[int, int], rot: int = 0) -> dict:
+        comps = copy.deepcopy(self.comps)
+        c = new_component(comps, ctype, pt[0], pt[1], rot)
+        comps.append(c)
+        self.commit(comps, self.wires, select_ids=[c["id"]])
+        return c
+
+    def rotate_ghost(self) -> None:
+        if self.ghost is None or self.tool in ("GND", "Label"):
+            return
+        self.ghost_rot = (self.ghost_rot + 90) % 360
+        self.scene.removeItem(self.ghost)
+        self._make_ghost()
+
+    # ------------------------------------------------------------------ wires
+    def _elbow(self, a: tuple[int, int], b: tuple[int, int]) -> tuple[int, int]:
+        return (a[0], b[1]) if self.wire_vertical_first else (b[0], a[1])
+
+    def wire_click(self, pt: tuple[int, int]) -> None:
+        if not self.wire_points:
+            self.wire_points = [pt]
+            self._update_preview(pt)
+            return
+        last = self.wire_points[-1]
+        if pt == last:
+            return
+        self.wire_points = clean_points(self.wire_points + [self._elbow(last, pt), pt])
+        if self.is_connection_point(pt):
+            self._finish_wire()
+        else:
+            self._update_preview(pt)
+
+    def add_wire(self, points) -> None:
+        pts = clean_points(points)
+        if len(pts) >= 2:
+            self.commit(self.comps, self.wires + [pts])
+
+    def _finish_wire(self) -> None:
+        pts = clean_points(self.wire_points)
+        self._cancel_wire()
+        self.add_wire(pts)
+
+    def _cancel_wire(self) -> None:
+        self.wire_points = []
+        if self.preview is not None:
+            self.scene.removeItem(self.preview)
+            self.preview = None
+
+    def _update_preview(self, pt: tuple[int, int]) -> None:
+        t = theme.tokens()
+        pts = self.wire_points + [self._elbow(self.wire_points[-1], pt), pt]
+        path = QPainterPath(QPointF(pts[0][0] * G, pts[0][1] * G))
+        for x, y in pts[1:]:
+            path.lineTo(QPointF(x * G, y * G))
+        if self.preview is None:
+            self.preview = QGraphicsPathItem()
+            self.preview.setZValue(30)
+            self.preview.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            self.scene.addItem(self.preview)
+        self.preview.setPen(QPen(QColor(t["accent"]), 1.6, Qt.PenStyle.DashLine))
+        self.preview.setPath(path)
+
+    def _update_marker(self, pt: tuple[int, int]) -> None:
+        t = theme.tokens()
+        if self.marker is None:
+            self.marker = QGraphicsEllipseItem()
+            self.marker.setZValue(31)
+            self.marker.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            self.scene.addItem(self.marker)
+        conn = self.is_connection_point(pt)
+        r = 5.0 if conn else 3.0
+        self.marker.setRect(pt[0] * G - r, pt[1] * G - r, 2 * r, 2 * r)
+        self.marker.setPen(QPen(QColor(t["accent"]), 1.8 if conn else 1.0))
+
+    # ------------------------------------------------------------------ editing
+    def selected(self) -> tuple[list[str], list[int]]:
+        cids = [i.comp["id"] for i in self.scene.selectedItems() if isinstance(i, CompItem) and not i.ghost]
+        wids = [i.index for i in self.scene.selectedItems() if isinstance(i, WireItem)]
+        return cids, wids
+
+    def _comp(self, cid: str) -> Optional[dict]:
+        return next((c for c in self.comps if c["id"] == cid), None)
+
+    def delete_selection(self) -> None:
+        cids, wids = self.selected()
+        cids = [c for c in cids if (self._comp(c) or {}).get("type") != "Plasma"]
+        if not cids and not wids:
+            return
+        self.commit([c for c in self.comps if c["id"] not in cids], [w for k, w in enumerate(self.wires) if k not in wids])
+
+    def rotate_selection(self) -> None:
+        if self.tool in PLACEABLE:
+            self.rotate_ghost()
+            return
+        cids, _w = self.selected()
+        comps = copy.deepcopy(self.comps)
+        moves = {}
+        changed = False
+        for c in comps:
+            if c["id"] in cids and c["type"] not in ("Plasma", "GND", "Label"):
+                old = pin_points(c, self.electrodes)
+                c["rot"] = (int(c.get("rot", 0)) + 90) % 360
+                for (_n, a), (_m, b) in zip(old, pin_points(c, self.electrodes)):
+                    moves.setdefault(a, b)
+                changed = True
+        if changed:
+            self.commit(comps, rubber_band(self.wires, moves, set()), select_ids=cids)
+
+    def update_component(self, cid: str, **changes) -> None:
+        comps = copy.deepcopy(self.comps)
+        for c in comps:
+            if c["id"] == cid:
+                c.update(changes)
+        self.commit(comps, self.wires, select_ids=[changes.get("id", cid)])
+
+    def rename_component(self, cid: str, new: str) -> bool:
+        comp = self._comp(cid)
+        if comp is None or not new or not new.replace("_", "").isalnum():
+            return False
+        if any(c["id"].upper() == new.upper() for c in self.comps if c["id"] != cid):
+            return False
+        letter = {"R": "R", "L": "L", "C": "C", "Vdc": "V"}.get(comp["type"])
+        if letter and new[0].upper() != letter:
+            return False
+        self.update_component(cid, id=new)
+        return True
+
+    def focus_properties(self, cid: str) -> None:
+        self.select(cid)
+        self.props.focus_first()
+
+    def select(self, cid: str) -> bool:
+        if cid not in self.comp_items:
+            return False
+        self.scene.clearSelection()
+        self.comp_items[cid].setSelected(True)
+        return True
+
+    # ------------------------------------------------------------------ selection -> properties
     def _on_selection(self) -> None:
         if self._building:
             return
-        item = self._selected_item()
-        if item is None:
-            self._selected_id = None
-            self.btn_remove.setEnabled(False)
-            self._show_default()
+        cids, wids = self.selected()
+        self.btn_delete.setEnabled(bool(wids) or any((self._comp(c) or {}).get("type") != "Plasma" for c in cids))
+        self.btn_rotate.setEnabled(bool(cids))
+        if len(cids) == 1 and not wids:
+            c = self._comp(cids[0])
+            nets = {}
+            if self.extraction is not None:
+                for name, _p in pin_points(c, self.electrodes):
+                    if (c["id"], name) in self.extraction.pin_net:
+                        nets[{"p": "+", "n": "−", "a": "ノード"}.get(name, name)] = self.extraction.pin_net[(c["id"], name)]
+            self.props.show_component(c, self.electrodes, nets)
             return
-        self._selected_id = item.desc.id
-        self.btn_remove.setEnabled(item.desc.remove is not None)
-        self.props.show_descriptor(item.desc, self.netlist, self.available_nodes()[:-1] + [self.netlist.next_node()])
-
-    def select(self, desc_id: str) -> bool:
-        item = self._items.get(desc_id)
-        if item is None:
-            return False
-        self.scene.clearSelection()
-        item.setSelected(True)
-        return True
-
-    def _show_default(self) -> None:
-        circ = self._circuit()
-        n_user = len(self.netlist.elements)
-        n_raw = len(self.netlist.raw_lines)
-        parts = ["要素をクリックすると右側で値を編集できます。「構成」メニューまたは右クリックで要素の追加・削除、"
-                 "「素子を追加」で任意の R / L / C / DC 源をノード W, F, T, 0, u_* の間に追加できます。"]
-        parts.append(f"ポート: {', '.join(circ['ports'])}  ／  FR 給電: {'独立電極' if self.fr_separate() else 'ESC 容量結合'}")
-        parts.append(f"ユーザ素子 {n_user} 個" + (f"（テキストのみの行 {n_raw} 行は左の回路パネルで編集）" if n_raw else ""))
-        notes = self.netlist.problems(set(self.available_nodes()))
-        self.props.show_default("\n".join(parts), "\n".join("⚠ " + p for p in notes))
-
-    # ------------------------------------------------------------------ building the scene
-    def rebuild(self) -> None:
-        self._building = True
-        try:
-            sel = self._selected_id
-            self.scene.clear()
-            self._items.clear()
-            try:
-                self.netlist = UserNetlist.parse(self._circuit().get("extra_netlist", "") or "")
-                self._build()
-            except Exception as exc:  # noqa: BLE001  (model transiently invalid)
-                t = theme.tokens()
-                _text(self.scene, f"回路図を生成できません: {exc}", 0, 0, t["error"], 9)
-            self.scene.setSceneRect(self.scene.itemsBoundingRect().adjusted(-U, -U, U, U))
-            if sel is not None and sel in self._items:
-                self._items[sel].setSelected(True)
-        finally:
-            self._building = False
-        self._on_selection()
-
-    def _add_item(self, item) -> None:
-        self.scene.addItem(item)
-        self._items[item.desc.id] = item
-        item.double_clicked.connect(lambda _it: self.props.focus_first())
-
-    def _wire(self, x0: float, y0: float, x1: float, y1: float, width: float = 1.6) -> None:
-        t = theme.tokens()
-        pen = QPen(QColor(t["text"]), width)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        ln = self.scene.addLine(x0, y0, x1, y1, pen)
-        ln.setZValue(1)
-
-    def _wire_v_hops(self, x: float, y0: float, y1: float, cross: list[float]) -> None:
-        t = theme.tokens()
-        pen = QPen(QColor(t["text"]), 1.6)
-        r = 6.0
-        path = QPainterPath(QPointF(x, y0))
-        for yc in sorted(c for c in cross if y0 + r < c < y1 - r):
-            path.lineTo(QPointF(x, yc - r))
-            path.arcTo(QRectF(x - r, yc - r, 2 * r, 2 * r), 90, -180)
-        path.lineTo(QPointF(x, y1))
-        it = self.scene.addPath(path, pen)
-        it.setZValue(1)
-
-    def _dot(self, x: float, y: float, label: str = "", above: bool = True) -> None:
-        t = theme.tokens()
-        d = self.scene.addEllipse(x - 3.5, y - 3.5, 7, 7, QPen(Qt.PenStyle.NoPen), QBrush(QColor(t["text"])))
-        d.setZValue(6)
-        if label:
-            it = _text(self.scene, label, 0, 0, t["accent_text"], 9, True)
-            w = it.boundingRect().width()
-            h = it.boundingRect().height()
-            it.setPos(x - w / 2, y - h - 6 if above else y + 6)
-
-    def _ground(self, x: float, y: float) -> None:
-        t = theme.tokens()
-        pen = QPen(QColor(t["text"]), 1.6)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        for i, w in enumerate((0.42 * U, 0.26 * U, 0.1 * U)):
-            ln = self.scene.addLine(x - w, y + i * 6, x + w, y + i * 6, pen)
-            ln.setZValue(1)
-
-    def _element(self, symbol: str, orient: str, x: float, y: float, desc: Descriptor, label: str, value: str, length: float = ELEMENT_LEN,
-                 label_side: str = "right") -> ElementItem:
-        it = ElementItem(symbol, orient, desc, label, value, length, label_side)
-        it.setPos(x, y)
-        self._add_item(it)
-        return it
-
-    def _chain_entries(self, port: str, ps: dict) -> list[tuple]:
-        """(kind 'series'|'shunt', symbol, label, value_text, descriptor)."""
-        gen = ps.get("generator", {}) or {}
-        out: list[tuple] = []
-        gd = self._generator_desc(port, gen)
-        if gen.get("type") == "l_match":
-            out.append(("series", "R", "R_gen", format_eng(float(gen.get("r_gen", 50.0)), "Ω"), gd))
-            auto = bool(gen.get("auto", True))
-            l_txt = "auto" if auto else format_eng(gen.get("l"), "H")
-            c_txt = "auto" if auto else format_eng(gen.get("c"), "F")
-            topo = gen.get("topology", "auto")
-            if topo in ("auto", "shunt_c_generator"):
-                out.append(("shunt", "C", "C_match", c_txt, gd))
-                out.append(("series", "L", "L_match", l_txt, gd))
-            else:
-                out.append(("series", "L", "L_match", l_txt, gd))
-                out.append(("shunt", "C", "C_match", c_txt, gd))
-        l_feed = float(ps.get("l_feed", 0.0) or 0.0)
-        if l_feed > 0:
-            out.append(("series", "L", "L_feed", format_eng(l_feed, "H"), Descriptor(
-                f"port.{port}.l_feed", f"給電インダクタンス L_feed（ポート {port}）",
-                "電源（または整合器）と電極の間の直列インダクタンス。共振により電極電圧が増幅されることがあります。",
-                [Field("float", "L_feed", f"circuit.ports.{port}.l_feed", "nH", 1e9)],
-                remove=lambda p=port: self.model.set(f"circuit.ports.{p}.l_feed", 0.0), remove_text="L_feed を外す")))
-        if ps.get("blocking_c") is not None:
-            out.append(("series", "C", "C_b", format_eng(float(ps["blocking_c"]), "F"), Descriptor(
-                f"port.{port}.blocking_c", f"ブロッキング容量 C_b（ポート {port}）",
-                "直列ブロッキング容量。TRAN 解析ではこの容量に自己バイアス電圧が立ちます。",
-                [Field("opt_float", "C_b", f"circuit.ports.{port}.blocking_c", "nF", 1e9),
-                 Field("opt_float", "DC バイアス初期推定", f"circuit.ports.{port}.dc_bias_guess", "V", 1.0, "空欄なら自動推定")],
-                remove=lambda p=port: self.model.set(f"circuit.ports.{p}.blocking_c", None), remove_text="C_b を外す")))
-        return out
-
-    def _generator_desc(self, port: str, gen: dict) -> Descriptor:
-        return Descriptor(
-            f"port.{port}.generator", f"発振器と L 型整合器（ポート {port}）",
-            "電源振幅は発振器の開放電圧。自動チューニングでは AC 解析のポートインピーダンスから L と C を設計します。",
-            [Field("float", "発振器インピーダンス r_gen", f"circuit.ports.{port}.generator.r_gen", "Ω"),
-             Field("bool", "自動チューニング", f"circuit.ports.{port}.generator.auto"),
-             Field("opt_float", "整合 L（手動）", f"circuit.ports.{port}.generator.l", "nH", 1e9),
-             Field("opt_float", "整合 C（手動）", f"circuit.ports.{port}.generator.c", "pF", 1e12),
-             Field("choice", "トポロジ", f"circuit.ports.{port}.generator.topology",
-                   choices=[("auto", "自動"), ("shunt_c_generator", "並列 C を発振器側"), ("shunt_c_load", "並列 C を負荷側")])],
-            remove=lambda p=port: self.model.set(f"circuit.ports.{p}.generator.type", "none"), remove_text="整合器を外す")
-
-    def _source_desc(self, port: str, srcs: list[dict]) -> Descriptor:
-        fields: list[Field] = []
-        for i, _s in enumerate(srcs):
-            base = f"circuit.ports.{port}.sources.{i}"
-            fields += [Field("float", f"電源 {i+1}: 周波数", f"{base}.f", "MHz", 1e-6),
-                       Field("float", f"電源 {i+1}: 振幅", f"{base}.v", "V"),
-                       Field("float", f"電源 {i+1}: 位相", f"{base}.phase_deg", "deg"),
-                       Field("opt_float", f"電源 {i+1}: 電力指定", f"{base}.power", "W", 1.0, "空欄なら電圧指定。値を入れると供給電力が一定になるよう振幅を反復します")]
-        actions = [("電源（周波数成分）を追加", lambda p=port: self.add_source(p))]
-        if len(srcs) > 1:
-            actions += [(f"電源 {i+1} を削除", lambda p=port, i=i: self.remove_source(p, i)) for i in range(len(srcs))]
-        return Descriptor(f"port.{port}.sources", f"RF 電源（ポート {port}）",
-                          "理想電圧源（複数行で多周波）。発振器を有効にすると開放電圧として扱われます。", fields, actions=actions)
-
-    def _build(self) -> None:
-        t = theme.tokens()
-        d = self._data()
-        circ = d["circuit"]
-        ports: dict = circ["ports"]
-        fr_sep = self.fr_separate()
-        driven = self.top_driven()
-        rows = ["W"] + (["F"] if fr_sep else []) + (["T"] if driven else [])
-        chains = {p: (self._chain_entries(p, ports[p]) if p in ports else []) for p in rows}
-        n_series_max = max([sum(1 for e in chains[p] if e[0] == "series") for p in rows] + [0])
-        x_src = 1.5 * U
-        x_port = x_src + ELEMENT_LEN * n_series_max + (U if n_series_max == 0 else 0.5 * U)
-        # ---- between-row stacks (W–F) and F hang (tuning)
-        tuning = circ.get("fr", {}).get("tuning", {}) or {}
-        ttype = tuning.get("type", "none") if fr_sep else "none"
-        between: list[list[tuple]] = []  # stacks of (symbol, label, value, desc)
-        hang_f: list[tuple] = []
-        tdesc = Descriptor("fr.tuning", f"FR 調整回路: {dict(FR_TUNING_CHOICES).get(ttype, ttype)}",
-                           "独立 FR 電極（ポート F）の外部回路。種類は「構成」メニューまたは右クリックで変更します。",
-                           [Field("choice", "種類", "circuit.fr.tuning.type", choices=FR_TUNING_CHOICES),
-                            Field("opt_float", "調整 C", "circuit.fr.tuning.c", "pF", 1e12),
-                            Field("opt_float", "調整 L", "circuit.fr.tuning.l", "nH", 1e9),
-                            Field("float", "直列抵抗 R", "circuit.fr.tuning.r", "Ω"),
-                            Field("opt_float", "DC バイアス", "circuit.fr.tuning.v_dc", "V")],
-                           remove=lambda: self.set_fr_tuning("none"), remove_text="調整回路を外す（開放）")
-        if ttype == "tie":
-            between.append([("short", "短絡", "F = W", tdesc)])
-        elif ttype == "coupling_to_w":
-            st = []
-            if tuning.get("l"):
-                st.append(("L", "L_cpl", format_eng(tuning["l"], "H"), tdesc))
-            if float(tuning.get("r", 0) or 0) > 0:
-                st.append(("R", "R_cpl", format_eng(tuning["r"], "Ω"), tdesc))
-            st.append(("C", "C_cpl", format_eng(tuning.get("c"), "F"), tdesc))
-            between.append(st)
-        elif ttype == "cap_to_gnd":
-            if float(tuning.get("r", 0) or 0) > 0:
-                hang_f.append(("R", "R_tune", format_eng(tuning["r"], "Ω"), tdesc))
-            hang_f.append(("C", "C_tune", format_eng(tuning.get("c"), "F"), tdesc))
-        elif ttype == "series_lc_to_gnd":
-            hang_f.append(("L", "L_tune", format_eng(tuning.get("l"), "H"), tdesc))
-            if float(tuning.get("r", 0) or 0) > 0:
-                hang_f.append(("R", "R_tune", format_eng(tuning["r"], "Ω"), tdesc))
-            hang_f.append(("C", "C_tune", format_eng(tuning.get("c"), "F"), tdesc))
-        elif ttype == "dc_bias":
-            hang_f.append(("L", "L_choke", format_eng(tuning.get("l") or 1e-3, "H"), tdesc))
-            hang_f.append(("Vdc", "V_dc", format_eng(tuning.get("v_dc") or 0.0, "V"), tdesc))
-        cwf = circ.get("c_wf", {}) or {}
-        if fr_sep:
-            cdesc = Descriptor("c_wf", "W–F 間容量 C_WF", "ウェハ電極と FR 電極の間の直接結合容量（独立 FR 電極のみ）。自動では幾何から推定します。",
-                               [Field("choice", "指定", "circuit.c_wf.mode", choices=[("auto", "自動（幾何から）"), ("manual", "手動")]),
-                                Field("opt_float", "C_WF（手動）", "circuit.c_wf.value", "pF", 1e12)],
-                               remove=lambda: self.set_c_wf_manual(False), remove_text="自動に戻す")
-            if cwf.get("mode") == "manual" and cwf.get("value"):
-                between.append([("C", "C_WF", format_eng(cwf["value"], "F"), cdesc)])
-        # ---- row positions
-        ys: dict[str, float] = {}
-        hang: dict[str, float] = {}
-        y = 0.0
-        prev: Optional[str] = None
-        for p in rows:
-            if prev is not None:
-                m_between = max([len(st) for st in between] + [0]) if (prev, p) == ("W", "F") else 0
-                y = ys[prev] + max(4.5 * U, hang[prev] + 2.2 * U, ELEMENT_LEN * m_between + 1.0 * U)
-            ys[p] = y
-            has_shunt = any(e[0] == "shunt" for e in chains[p]) or (p in ports and float(ports[p].get("c_stray", 0) or 0) > 0)
-            h = 2.7 * U if (p in ports or has_shunt) else 0.6 * U
-            if p == "F" and hang_f:
-                h = max(h, ELEMENT_LEN * len(hang_f) + 0.8 * U)
-            hang[p] = h
-            prev = p
-        # ---- block geometry
-        n_cols = len(between)
-        x_block = x_port + 1.6 * U + 1.5 * U * n_cols
-        y_first, y_last = ys[rows[0]], ys[rows[-1]]
-        block_rect = QRectF(x_block, y_first - 1.4 * U, 4.8 * U, max(3.4 * U, (y_last - y_first) + 2.8 * U))
-        # ---- draw rows
-        for p in rows:
-            yr = ys[p]
-            x = x_src
-            if p in ports:
-                ps = ports[p]
-                srcs = ps.get("sources", []) or []
-                if len(srcs) == 1:
-                    vtxt = f"{format_eng(srcs[0]['f'], 'Hz')}, {format_eng(srcs[0]['v'], 'V')}" + (" (P)" if srcs[0].get("power") else "")
-                else:
-                    vtxt = f"{len(srcs)} 周波数"
-                self._element("Vac", "v", x, yr, self._source_desc(p, srcs), f"V_{p}", vtxt, label_side="left")
-                self._ground(x, yr + ELEMENT_LEN)
-                self._dot(x, yr)
-                for kind, sym, label, val, desc in chains[p]:
-                    if kind == "series":
-                        self._element(sym, "h", x, yr, desc, label, val)
-                        x += ELEMENT_LEN
-                        self._dot(x, yr)
-                    else:
-                        self._element(sym, "v", x, yr, desc, label, val)
-                        self._ground(x, yr + ELEMENT_LEN)
-            if x < x_port:
-                self._wire(x, yr, x_port, yr)
-            self._wire(x_port, yr, x_block, yr)
-            self._dot(x_port, yr, p)
-            if p in ports and float(ports[p].get("c_stray", 0) or 0) > 0:
-                ps = ports[p]
-                cdesc_s = Descriptor(f"port.{p}.c_stray", f"ストレイ容量 C_stray（ポート {p}）", "電極ノードから接地への浮遊容量。",
-                                     [Field("float", "C_stray", f"circuit.ports.{p}.c_stray", "pF", 1e12)],
-                                     remove=lambda pp=p: self.model.set(f"circuit.ports.{pp}.c_stray", 0.0), remove_text="C_stray を外す")
-                self._element("C", "v", x_port, yr, cdesc_s, "C_stray", format_eng(float(ps["c_stray"]), "F"))
-                self._ground(x_port, yr + ELEMENT_LEN)
-            if p == "F" and hang_f:
-                xh = x_port + (0.75 * U if (p in ports and float(ports[p].get("c_stray", 0) or 0) > 0) else 0.0)
-                yy = yr
-                if xh != x_port:
-                    self._dot(xh, yr)
-                for sym, label, val, desc in hang_f:
-                    self._element(sym, "v", xh, yy, desc, label, val)
-                    yy += ELEMENT_LEN
-                self._ground(xh, yy)
-        # ---- between W and F
-        if fr_sep and between:
-            yw, yf = ys["W"], ys["F"]
-            for k, stack in enumerate(between):
-                xk = x_port + 1.5 * U * (k + 1)
-                yy = yw
-                for sym, label, val, desc in stack:
-                    if sym == "short":
-                        self._element("short", "v", xk, yy, desc, label, val, yf - yw)
-                        yy = yf
-                        break
-                    self._element(sym, "v", xk, yy, desc, label, val)
-                    yy += ELEMENT_LEN
-                if yy < yf:
-                    self._wire(xk, yy, xk, yf)
-                self._dot(xk, yw)
-                self._dot(xk, yf)
-        # ---- plasma block
-        n_cells = sum(int(v) for v in d["numerics"]["mesh"].get("n_r", {}).values())
-        lines = [f"FR: {'独立電極（ポート F）' if fr_sep else 'ESC 容量結合（自動）'}",
-                 f"上部電極: {'駆動（ポート T）' if driven else '接地'}",
-                 f"{n_cells} セル × N_z = {d['numerics']['mesh'].get('n_z', 1)}",
-                 "物理モデルから自動生成"]
-        bdesc = Descriptor("plasma", "プラズマ・電極ラダー（自動生成）",
-                           "幾何・プラズマ・メッシュ設定から生成される等価回路。ここでは給電構成だけを切り替えます。",
-                           [Field("info", "ポート", lambda: ", ".join(self._circuit()["ports"])),
-                            Field("info", "セル数", lambda: str(sum(int(v) for v in self._data()["numerics"]["mesh"].get("n_r", {}).values())))],
-                           actions=[("上部電極を駆動 / 接地", lambda: self.set_top_driven(not self.top_driven())),
-                                    ("FR を独立電極 / ESC 結合", lambda: self.set_fr_type("esc_coupled" if self.fr_separate() else "separate"))])
-        block = BlockItem(block_rect, bdesc, "プラズマ・電極ラダー", lines)
-        self._add_item(block)
-        for p in rows:
-            _text(self.scene, p, x_block + 6, ys[p] - 16, t["accent_text"], 8, True)
-        xg = block_rect.center().x()
-        self._wire(xg, block_rect.bottom(), xg, block_rect.bottom() + 0.6 * U)
-        self._ground(xg, block_rect.bottom() + 0.6 * U)
-        _text(self.scene, "G", xg + 8, block_rect.bottom() + 0.1 * U, t["accent_text"], 8, True)
-        # ---- user elements (rails)
-        y_rail0 = max(ys[rows[-1]] + hang[rows[-1]], block_rect.bottom() + 1.0 * U) + 1.8 * U
-        self._build_rails(y_rail0, x_block + block_rect.width())
-
-    def _build_rails(self, y0: float, x_min_end: float) -> None:
-        t = theme.tokens()
-        els = self.netlist.elements
-        _text(self.scene, "ユーザ定義素子（circuit.extra_netlist）", 0.2 * U, y0 - 1.3 * U, t["text_muted"], 9, True)
-        if not els:
-            _text(self.scene, "まだありません。「素子を追加」または右クリックで R / L / C / DC 源をノード間に追加できます。",
-                  0.2 * U, y0 - 0.8 * U, t["text_muted"], 8)
+        if len(wids) == 1 and not cids:
+            self.props.show_wire(wids[0])
             return
-        order: list[str] = []
-        for n in ("W", "F", "T"):
-            if any(n in e.nodes() for e in els):
-                order.append(n)
-        for n in self.netlist.all_nodes():
-            if n not in order and n != "0":
-                order.append(n)
-        order.append("0")
-        spacing = 2.4 * U
-        rail_y = {n: y0 + i * spacing for i, n in enumerate(order)}
-        x_start = 2.4 * U
-        x_end = max(x_min_end, 3.5 * U + ELEMENT_LEN * len(els) + 0.5 * U)
-        pen = QPen(QColor(t["border"]), 1.4)
-        for n, yr in rail_y.items():
-            ln = self.scene.addLine(x_start, yr, x_end, yr, pen)
-            ln.setZValue(0)
-            lab = _text(self.scene, "0 (GND)" if n == "0" else n, 0, 0, t["accent_text"] if n != "0" else t["text_muted"], 9, True)
-            lab.setPos(x_start - lab.boundingRect().width() - 10, yr - lab.boundingRect().height() / 2)
-        self._ground(x_end, rail_y["0"])
-        avail = set(self.available_nodes())
-        for k, e in enumerate(els):
-            xk = 3.5 * U + ELEMENT_LEN * k
-            ya, yb = rail_y.get(e.n1, y0), rail_y.get(e.n2, y0)
-            if ya > yb:
-                ya, yb = yb, ya
-            if ya == yb:
-                yb = ya + spacing
-            kind_label = KINDS[e.kind]
-            if e.kind == "V" and e.value == 0:
-                sym, vtxt = "short", "短絡 (0 V)"
-            else:
-                sym, vtxt = {"R": "R", "L": "L", "C": "C", "V": "Vdc"}[e.kind], format_eng(e.value, e.unit)
-            desc = Descriptor(f"user.{k}", f"{kind_label} {e.name}", f"ユーザ定義素子: {e.to_line()}", user_index=k,
-                              remove=lambda i=k: self.remove_user_element(i), remove_text="この素子を削除")
-            if e.n1 not in avail or e.n2 not in avail:
-                desc.description += "\n⚠ 現在の構成に無いノードを参照しています"
-            span = yb - ya
-            crossing = [yy for yy in rail_y.values() if ya < yy < yb]
-            if span <= ELEMENT_LEN * 1.5 or sym == "short":
-                self._element(sym, "v", xk, ya, desc, e.name, vtxt, span)
-            else:
-                self._element(sym, "v", xk, ya, desc, e.name, vtxt)
-                self._wire_v_hops(xk, ya + ELEMENT_LEN, yb, crossing)
-            self._dot(xk, ya)
-            self._dot(xk, yb)
-
-
-FR_TUNING_CHOICES = [("none", "開放"), ("tie", "W と短絡"), ("cap_to_gnd", "接地へ可変 C"), ("series_lc_to_gnd", "接地へ直列 LC"),
-                     ("coupling_to_w", "W へ結合 C"), ("dc_bias", "DC バイアス（チョーク経由）"), ("source", "独立電源（ポート F）")]
+        if cids or wids:
+            self.props.show_multi(len(cids), len(wids))
+            return
+        n = {t: sum(1 for c in self.comps if c["type"] == t) for t in TYPE_NAMES}
+        summary = (f"部品 {len(self.comps) - 1} 個（RF 電源 {n['Vrf']}、R {n['R']}、L {n['L']}、C {n['C']}、DC 電源 {n['Vdc']}）、ワイヤ {len(self.wires)} 本。\n\n"
+                   "ツールバーで部品を選んでクリックで配置し、ワイヤツール（W）でピン同士をつなぎます。"
+                   "ワイヤの端が別のワイヤの途中に乗ると T 字に接続され、同じ名前のネットラベルどうしも接続されます。")
+        t = theme.tokens()
+        if self.problem_text:
+            notes = "<br>".join(f"<span style='color:{t['warning']}'>⚠ {p}</span>" for p in self.problem_text)
+        else:
+            notes = f"<span style='color:{t['success']}'>✓ 接続に問題はありません</span>"
+        if self.extraction is not None:
+            srcs = ", ".join(f"{k} → {v}" for k, v in self.extraction.source_port.items())
+            bias = ", ".join(self.extraction.bias_ports) or "なし"
+            notes += (f"<br><br><span style='color:{t['text_muted']}'>電源の集計先: {srcs or '—'}<br>"
+                      f"自己バイアスが立つ電極（直流的に接地から浮いている）: {bias}</span>")
+        self.props.show_none(summary, notes)

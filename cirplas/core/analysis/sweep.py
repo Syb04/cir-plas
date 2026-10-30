@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-from ..project import Project
+from ..project import Project, apply_path
 
 
 def get_path(d: dict, path: str) -> Any:
@@ -81,7 +81,7 @@ def expand(base: Project, spec: SweepSpec) -> list[SweepJob]:
         d = copy.deepcopy(base_d)
         vals = {}
         for a, i in zip(spec.axes, idx):
-            set_path(d, a.path, a.values[i])
+            apply_path(d, a.path, a.values[i])
             vals[a.path] = a.values[i]
         d["name"] = f"{base.name}_{spec.name}_{k:03d}"
         jobs.append(SweepJob(index=k, indices=tuple(idx), values=vals, project=Project.model_validate(d),

@@ -262,10 +262,67 @@ class FrSpec(StrictModel):
     tuning: FrTuningSpec = Field(default_factory=FrTuningSpec)
 
 
+SchType = Literal["R", "L", "C", "Vdc", "Vrf", "GND", "Label", "Plasma"]
+
+
+class SchComponent(StrictModel):
+    """A component of the free-form schematic (positions in grid units, see core/schematic.py)."""
+
+    id: str = Field(..., description="instance name; R/L/C/Vdc names start with their SPICE letter")
+    type: SchType
+    x: int = 0
+    y: int = 0
+    rot: Literal[0, 90, 180, 270] = 0
+    value: Optional[float] = Field(None, description="R [ohm], L [H], C [F], Vdc [V]")
+    tones: list[SourceSpec] = Field(default_factory=list, description="Vrf: frequency components")
+    port: Optional[Literal["W", "F", "T"]] = Field(None, description="Vrf: electrode it is accounted to (None = nearest)")
+    label: Optional[str] = Field(None, description="Label: net name (stored as u_<label> in the netlist)")
+
+
+class SchWire(StrictModel):
+    points: list[tuple[int, int]] = Field(..., min_length=2, description="polyline vertices in grid units")
+
+
+class Schematic(StrictModel):
+    components: list[SchComponent] = Field(default_factory=list)
+    wires: list[SchWire] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _check(self) -> "Schematic":
+        ids = [c.id for c in self.components]
+        dup = {i for i in ids if ids.count(i) > 1}
+        if dup:
+            raise ValueError(f"schematic: duplicate component names {sorted(dup)}")
+        if sum(1 for c in self.components if c.type == "Plasma") != 1:
+            raise ValueError("schematic: exactly one plasma block is required")
+        letters = {"R": "R", "L": "L", "C": "C", "Vdc": "V"}
+        for c in self.components:
+            if c.type in letters:
+                if not c.id or c.id[0].upper() != letters[c.type] or not c.id.replace("_", "").isalnum():
+                    raise ValueError(f"schematic: {c.type} name '{c.id}' must start with '{letters[c.type]}' and be alphanumeric")
+                if c.value is None:
+                    raise ValueError(f"schematic: {c.id} has no value")
+                if c.type != "Vdc" and c.value <= 0:
+                    raise ValueError(f"schematic: {c.id} value must be positive")
+            if c.type == "Vrf":
+                if not c.id.replace("_", "").isalnum():
+                    raise ValueError(f"schematic: source name '{c.id}' must be alphanumeric")
+                if not c.tones:
+                    raise ValueError(f"schematic: RF source {c.id} has no frequency component")
+            if c.type == "Label" and not (c.label or "").strip():
+                raise ValueError(f"schematic: label {c.id} has no name")
+        if not any(c.type == "Vrf" for c in self.components):
+            raise ValueError("schematic: at least one RF source is required")
+        return self
+
+
 class CircuitSpec(StrictModel):
-    ports: dict[str, PortSpec]
+    mode: Literal["ports", "schematic"] = Field(
+        "ports", description="ports: external circuit from the per-port chains below; schematic: free-form schematic")
+    ports: dict[str, PortSpec] = Field(default_factory=dict, description="derived from the schematic in schematic mode")
     fr: FrSpec = Field(default_factory=FrSpec)
     c_wf: AutoOrValue = Field(default_factory=AutoOrValue, description="W-F capacitance (separate FR electrode only)")
+    schematic: Optional[Schematic] = None
     extra_netlist: str = ""
 
 
@@ -358,6 +415,13 @@ class Project(StrictModel):
         conductors = {r.conductor for r in self.geometry.regions}
         if "W" not in conductors:
             raise ValueError("at least one region must use the wafer electrode 'W'")
+        if self.circuit.mode == "schematic":
+            if self.circuit.schematic is None:
+                raise ValueError("circuit.mode='schematic' requires circuit.schematic")
+            from .schematic import derive_ports
+
+            self.circuit.ports = derive_ports(self.circuit.schematic, self.electrodes())[0]
+            self.circuit.fr.type = "separate" if "F" in conductors else "esc_coupled"
         if self.circuit.fr.type == "separate" and "F" not in conductors:
             raise ValueError("circuit.fr.type='separate' requires a region with conductor 'F'")
         if self.circuit.fr.type == "esc_coupled" and "F" in conductors:
@@ -386,6 +450,19 @@ class Project(StrictModel):
         return self
 
     # ---------------------------------------------------------------- helpers
+    def electrodes(self) -> list[str]:
+        """Driven-electrode nodes present in the geometry (W always, F for a separate FR, T for a driven top)."""
+        conductors = {r.conductor for r in self.geometry.regions}
+        return ["W"] + (["F"] if "F" in conductors else []) + (["T"] if self.geometry.top.conductor == "driven" else [])
+
+    def bias_ports(self) -> list[str]:
+        """Ports whose electrode is DC-isolated by series capacitors (self-bias develops there)."""
+        if self.circuit.mode == "schematic":
+            from .schematic import extract
+
+            return extract(self.circuit.schematic, self.electrodes()).bias_ports
+        return [port for port, ps in self.circuit.ports.items() if ps.blocking_c is not None]
+
     def frequencies(self) -> list[float]:
         fs: set[float] = set()
         for port in self.circuit.ports.values():
@@ -417,6 +494,44 @@ class Project(StrictModel):
 
     def hash(self) -> str:
         return hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest()[:16]
+
+
+def set_source_field(d: dict, port: str, k: int, key: str, value) -> None:
+    """Set field ``key`` of source ``k`` of ``port`` in a project dict (both circuit modes).
+
+    In schematic mode the port sources are derived from the RF source components, so the value is written to the
+    corresponding tone of the component instead."""
+    circ = d["circuit"]
+    if circ.get("mode", "ports") == "schematic":
+        from .schematic import derive_ports
+
+        sch = Schematic.model_validate(circ["schematic"])
+        conductors = {r["conductor"] for r in d["geometry"]["regions"]}
+        electrodes = ["W"] + (["F"] if "F" in conductors else []) + (["T"] if d["geometry"]["top"]["conductor"] == "driven" else [])
+        mapping = derive_ports(sch, electrodes)[1]
+        comp_id, tone = mapping[port][k]
+        comp = next(c for c in circ["schematic"]["components"] if c["id"] == comp_id)
+        comp["tones"][tone][key] = value
+    else:
+        circ["ports"][port]["sources"][k][key] = value
+
+
+def apply_path(d: dict, path: str, value) -> None:
+    """Set a dotted path in a project dict; ``circuit.ports.<P>.sources.<k>.<key>`` also works in schematic mode."""
+    import re
+
+    m = re.fullmatch(r"circuit\.ports\.([WFT])\.sources\.(\d+)\.(\w+)", path)
+    if m and d["circuit"].get("mode", "ports") == "schematic":
+        set_source_field(d, m.group(1), int(m.group(2)), m.group(3), value)
+        return
+    node = d
+    keys = path.split(".")
+    for key in keys[:-1]:
+        node = node[int(key)] if isinstance(node, list) else node[key]
+    if isinstance(node, list):
+        node[int(keys[-1])] = value
+    else:
+        node[keys[-1]] = value
 
 
 def load_project(path: str | Path) -> Project:

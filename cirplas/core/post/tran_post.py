@@ -222,25 +222,41 @@ def postprocess_tran(res: RawResult, idx: NetlistIndex, model: CircuitModel, per
     # ports
     ports: list[PortResult] = []
     p_src_total = 0.0
+    def node_v(name: str) -> np.ndarray:
+        return np.zeros_like(t_w) if name == "0" else v(f"v({name})")
+
+    def term_power(terms) -> float:
+        # source branch current is defined into the source's + node
+        return sum(time_average(t_w, (node_v(a) - node_v(b)) * -vec(br)) for a, b, br in terms)
+
     for port in idx.ports:
         vp = v(f"v({port})")
         ip = vec(idx.i_port[port])
-        vs = v(f"v({idx.node_source[port]})")
-        i_src = -vec(idx.i_source[port])  # source branch current is defined into the source's + node
         hv = harmonics(uni(vp), n_per_period)
         hi = harmonics(uni(ip), n_per_period)
         p_port = time_average(t_w, vp * ip)
-        p_src = time_average(t_w, vs * i_src)
-        gen = model.project.circuit.ports[port].generator
-        if gen.type == "l_match":
-            p_diss += time_average(t_w, i_src * i_src) * gen.r_gen  # generator internal resistance
+        if port in idx.source_terms:
+            p_src = term_power(idx.source_terms[port])
+        else:
+            vs = v(f"v({idx.node_source[port]})")
+            i_src = -vec(idx.i_source[port])
+            p_src = time_average(t_w, vs * i_src)
+            gen = model.project.circuit.ports[port].generator
+            if gen.type == "l_match":
+                p_diss += time_average(t_w, i_src * i_src) * gen.r_gen  # generator internal resistance
         z = hv.c[1] / hi.c[1] if abs(hi.c[1]) > 0 else complex("nan")
         ports.append(PortResult(port=port, v_dc=hv.dc, v_1=hv.amplitude(1), i_1=hi.amplitude(1),
                                 phase_deg=float(np.degrees(np.angle(z))) if z == z else float("nan"),
                                 p=p_port, p_source=p_src, z_re=float(z.real), z_im=float(z.imag), i_dc=hi.dc))
         p_src_total += p_src
+    # schematic mode: DC sources deliver power, external resistors dissipate it
+    if idx.dc_source_terms:
+        p_src_total += term_power(idx.dc_source_terms)
+    for a, b, r in idx.ext_resistors:
+        p_diss += time_average(t_w, (node_v(a) - node_v(b)) ** 2) / r
     # DC power flowing into the series blocking capacitors (charging): (V_src,dc - V_port,dc) * I_dc with V_src,dc = 0
-    p_cap_dc = sum(-pr.v_dc * pr.i_dc for pr in ports)
+    cap_ports = idx.bias_ports if idx.bias_ports is not None else [pr.port for pr in ports]
+    p_cap_dc = sum(-pr.v_dc * pr.i_dc for pr in ports if pr.port in cap_ports)
     pbe = (p_src_total - p_diss - p_cap_dc) / p_src_total if p_src_total else float("nan")
     z_mid = np.array([c.bulk_mid for c in model.mesh.cells])  # (n_c, nz) heights above each cell's bottom conductor
     maps = {"p_ohm": map_p_ohm, "jz_1": map_jz, "jr_1": map_jr, "p_ohm_radial": map_pr, "z_mid": z_mid,

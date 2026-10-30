@@ -48,7 +48,7 @@ class TranResult:
 
 def _forced_nodes(model: CircuitModel, idx: NetlistIndex, port: str) -> list[str]:
     """Electrode node plus every bottom-stack node of the cells on that electrode."""
-    nodes = [port]
+    nodes = [port] + [n for n in idx.extra_forced.get(port, []) if n != port]
     for i, c in enumerate(model.mesh.cells):
         if c.conductor != port:
             continue
@@ -99,7 +99,7 @@ def run_tran(ctx: RunContext, ac: Optional[AcResult] = None) -> TranResult:
     est: Estimates = ac.estimates
     model = build_model(p, est)
     # which ports need a self-bias iteration
-    bias_ports = [port for port, ps in p.circuit.ports.items() if ps.blocking_c is not None] if p.numerics.dc_bias.method != "none" else []
+    bias_ports = p.bias_ports() if p.numerics.dc_bias.method != "none" else []
     v_dc = {port: (p.circuit.ports[port].dc_bias_guess if p.circuit.ports[port].dc_bias_guess is not None else est.v_dc_guess.get(port, 0.0))
             for port in bias_ports}
     history: list[dict] = []

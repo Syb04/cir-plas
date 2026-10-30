@@ -72,6 +72,12 @@ class NetlistIndex:
     node_generator: dict[str, str] = field(default_factory=dict)  # port -> generator (open-circuit) node when an L match is used
     node_match_in: dict[str, str] = field(default_factory=dict)  # port -> node between r_gen and the matching network
     node_chain: dict[str, str] = field(default_factory=dict)  # port -> first node of the port chain (after the source / match)
+    # schematic mode: every RF source accounted to a port, DC sources, external resistors, extra clamp nets
+    source_terms: dict[str, list[tuple[str, str, str]]] = field(default_factory=dict)  # port -> [(node+, node-, branch)]
+    dc_source_terms: list[tuple[str, str, str]] = field(default_factory=list)
+    ext_resistors: list[tuple[str, str, float]] = field(default_factory=list)
+    extra_forced: dict[str, list[str]] = field(default_factory=dict)
+    bias_ports: Optional[list[str]] = None  # schematic mode: ports with a DC-floating electrode
 
 
 # Nonlinear sheath capacitor. u = softplus(V) = (V + sqrt(V^2 + eps^2))/2  (>= 0, -> V for V >> eps, -> 0 for V << -eps)
@@ -437,8 +443,34 @@ class NetlistBuilder:
             L.append(f"Cstray_{port} {port} 0 {fmt(ps.c_stray)}")
         idx.ports.append(port)
 
+    def _schematic(self, idx: NetlistIndex) -> None:
+        from ..schematic import spice_lines
+
+        circ = self.project.circuit
+        if self.mode == "tran":
+            sp = spice_lines(circ, self.project.electrodes(), "tran", ramp_time=self.tran.ramp_time)
+        else:
+            sp = spice_lines(circ, self.project.electrodes(), "ac", ac_frequency=self.ac.frequency, ac_sweep=self.ac.sweep is not None)
+        self.lines += sp.lines
+        for e in self.project.electrodes():
+            idx.ports.append(e)
+            idx.i_port[e] = nm.vec_branch(f"Vcb_{e}")
+            terms = sp.sources.get(e, [])
+            idx.source_terms[e] = terms
+            if terms:
+                idx.node_source[e] = terms[0][0]
+                idx.i_source[e] = terms[0][2]
+        idx.dc_source_terms = sp.dc_sources
+        idx.ext_resistors = sp.resistors
+        idx.bias_ports = list(sp.extraction.bias_ports)
+        idx.extra_forced = {e: [n for n in nets if n != "0"] for e, nets in sp.extraction.clamp_nets.items()}
+
     def _external(self, idx: NetlistIndex) -> None:
         circ = self.project.circuit
+        if circ.mode == "schematic":
+            self._schematic(idx)
+            self._bias_clamp_and_user()
+            return
         for port in ("W", "T", "F"):
             if port in circ.ports:
                 self._port_chain(port, circ.ports[port], idx)
@@ -475,6 +507,10 @@ class NetlistBuilder:
                 L.append(f"Vdc_F nFd 0 DC {fmt(t.v_dc or 0.0)}")
             if circ.c_wf.mode == "manual" and circ.c_wf.value:
                 L.append(f"Cwf W F {fmt(circ.c_wf.value)}")
+        self._bias_clamp_and_user()
+
+    def _bias_clamp_and_user(self) -> None:
+        circ = self.project.circuit
         if self.mode == "tran" and self.tran.bias_clamp:
             L = self.lines
             L.append("* ---- DC bias clamp (stiff at the operating point, released within a few tau)")

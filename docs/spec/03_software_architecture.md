@@ -161,6 +161,9 @@ cirplas/
 
 - 材料名・ガス名は `data/` の DB キー。インライン定義（`{"eps_r": 9.5, "sigma": 0}`）も可。
 - `circuit.fr.type` が `separate` の場合は `fr` 領域の `conductor` を `"F"` にし、`ports.F` と `c_wf` を追加します。
+- `circuit.mode` は `ports`（既定、ポートごとの直列チェーン）または `schematic`。`schematic` では `circuit.schematic` に
+  `components`（`id`, `type` = R/L/C/Vdc/Vrf/GND/Label/Plasma, `x`, `y`, `rot`, `value`, `tones`, `port`, `label`）と
+  `wires`（`points` の折れ線）を保存し、`circuit.ports` は検証時に回路図から導出されます（02 章 §2.4.1）。
 - 密度 `table`/`file` 指定では r–n 対を与えます。
 
 ### 4.2 結果ファイル（HDF5）
