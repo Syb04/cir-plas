@@ -28,3 +28,46 @@ jobs:
         run: pytest -q tests/integration
       - name: Validation cases
         run: pytest -q tests/validation
+
+  windows-package:
+    runs-on: windows-latest
+    needs: linux-tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: mingw-w64-x86_64-ngspice
+      - name: Collect ngspice shared library and runtime DLLs
+        shell: msys2 {0}
+        run: bash packaging/fetch_ngspice_msys2.sh packaging/ngspice
+      - name: Install package and PyInstaller
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[gui,dev]" pyinstaller
+      - name: Smoke test the solver with the bundled DLL
+        shell: pwsh
+        run: |
+          $env:CIRPLAS_NGSPICE_LIB = "$PWD\packaging\ngspice\libngspice-0.dll"
+          $env:PATH = "$PWD\packaging\ngspice;$env:PATH"
+          pytest -q tests/unit tests/integration
+      - name: Build bundle (PyInstaller)
+        shell: pwsh
+        run: pyinstaller --noconfirm --clean packaging/cirplas.spec
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $ver = (python -c "import cirplas; print(cirplas.__version__.split('.dev')[0])")
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DMyAppVersion=$ver packaging\installer.iss
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: CirPlas-windows
+          path: |
+            dist/CirPlas-*-setup.exe
+            dist/CirPlas/**

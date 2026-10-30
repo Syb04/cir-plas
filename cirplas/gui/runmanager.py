@@ -13,6 +13,15 @@ from PySide6.QtCore import QObject, QProcess, Signal
 from .project_model import ProjectModel
 
 
+def worker_command() -> tuple[str, list[str]]:
+    """Program and argument prefix that start the solver worker (frozen bundle or python -m)."""
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).parent
+        name = "cirplas-solve.exe" if sys.platform.startswith("win") else "cirplas-solve"
+        return str(exe_dir / name), []
+    return sys.executable, ["-m", "cirplas.worker.cli"]
+
+
 class RunManager(QObject):
     started = Signal(str)  # run directory
     progress = Signal(dict)
@@ -43,11 +52,12 @@ class RunManager(QObject):
         proj_path.write_text(project.to_json(), encoding="utf-8")
         self.output = self.run_dir / "run.h5"
         self.cancel_file = self.run_dir / "CANCEL"
-        args = ["-m", "cirplas.worker.cli", str(proj_path), "-o", str(self.output), "--mode", mode, "--progress", "jsonl",
+        args = [str(proj_path), "-o", str(self.output), "--mode", mode, "--progress", "jsonl",
                 "--netlist-out", str(self.run_dir / "netlist.cir"), "--cancel-file", str(self.cancel_file)]
         self.proc = QProcess(self)
-        self.proc.setProgram(sys.executable)
-        self.proc.setArguments(args)
+        program, prefix = worker_command()
+        self.proc.setProgram(program)
+        self.proc.setArguments(prefix + args)
         self.proc.readyReadStandardOutput.connect(self._on_stdout)
         self.proc.readyReadStandardError.connect(self._on_stderr)
         self.proc.finished.connect(self._on_finished)

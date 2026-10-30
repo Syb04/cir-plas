@@ -236,8 +236,12 @@ cirplas/
 
 ## 9. 配布とライセンス
 
-- 配布形態（決定）：**Windows インストーラ**（Inno Setup、埋め込み Python ランタイム同梱、スタートメニュー登録、`.cirplas.json` の関連付け）を主とし、
-  展開して使える zip も併せて提供します。`ngspice.dll` と `spinit`・コードモデル（`*.cm`）を同梱し、利用者側のインストールは不要です。
+- 配布形態（決定）：**Windows インストーラ**（Inno Setup、スタートメニュー登録、`.cirplas.json` の関連付け）を主とし、
+  展開して使える zip も併せて提供します。利用者側のインストールは不要です。
+- ビルド手順（実装済み、`packaging/`）：PyInstaller（`cirplas.spec`）で GUI `cirplas-gui.exe` とワーカ `cirplas-solve.exe` を 1 つの onedir バンドル
+  `dist/CirPlas/` に生成し、Inno Setup（`installer.iss`、日本語既定）でインストーラを作ります。ngspice は **MSYS2 の `mingw-w64-x86_64-ngspice`**
+  パッケージから `libngspice-0.dll` と依存ランタイム DLL を取得して同梱します（`fetch_ngspice_msys2.sh`）。GitHub Actions の `windows-package`
+  ジョブがこれを自動実行し、インストーラとバンドルを成果物として保存します。凍結バンドルでは GUI が隣接する `cirplas-solve.exe` を起動します。
 - UI 既定言語（決定）：日本語（英語に切替可）。
 - 本ツールのライセンス（決定：OSS）：**Apache-2.0 を提案**します（特許条項を含み企業由来の OSS で一般的。MIT/BSD-3 でも可）。
   リポジトリに `LICENSE`、`NOTICE`、`THIRD_PARTY_NOTICES.md` を置きます。
