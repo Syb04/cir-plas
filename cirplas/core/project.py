@@ -226,7 +226,22 @@ class SourceSpec(StrictModel):
     power: Optional[float] = Field(None, gt=0, description="delivered power target [W]; the amplitude is then iterated")
 
 
+class GeneratorSpec(StrictModel):
+    """50-ohm generator with an L-type matching network between the generator and the port chain
+    (spec 01 section 5.1, Phase 2). With auto=True the elements are tuned from the AC port impedance."""
+
+    type: Literal["none", "l_match"] = "none"
+    r_gen: float = Field(50.0, gt=0, description="generator source impedance [ohm]")
+    auto: bool = Field(True, description="tune L/C from the AC impedance of the port at the fundamental")
+    l: Optional[float] = Field(None, gt=0, description="series inductance [H] (manual)")
+    c: Optional[float] = Field(None, gt=0, description="shunt capacitance [F] (manual)")
+    topology: Literal["auto", "shunt_c_generator", "shunt_c_load"] = Field(
+        "auto", description="where the shunt capacitor sits: on the generator side (load R < r_gen) or on the load side (load R > r_gen)"
+    )
+
+
 class PortSpec(StrictModel):
+    generator: GeneratorSpec = Field(default_factory=GeneratorSpec)
     sources: list[SourceSpec] = Field(default_factory=list)
     blocking_c: Optional[float] = Field(None, gt=0, description="series blocking capacitor [F]")
     l_feed: float = Field(0.0, ge=0, description="series feed inductance [H]")

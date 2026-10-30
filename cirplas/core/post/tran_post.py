@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -34,6 +35,8 @@ class CellResult:
     p_el_b: float  # electron conduction loss (I_e * V) [W]
     p_el_t: float
     j_z_1: float  # fundamental amplitude of axial current density at the bulk center [A/m^2]
+    e_ion_mean: float = 0.0  # mean ion energy at the bottom surface ~ e <Vsh> [eV]
+    e_ion_width: float = 0.0  # bimodal IEDF width estimate [eV] (RF modulation, ion transit time)
 
     @property
     def s_e(self) -> float:
@@ -178,7 +181,17 @@ def postprocess_tran(res: RawResult, idx: NetlistIndex, model: CircuitModel, per
         p_ohm += radial_cell_share[i]
         s_b = ce.sheath_b.width(vsh_b)
         s_t = ce.sheath_t.width(vsh_t)
+        # IEDF estimate (bottom surface): collisionless ions, mean energy e<Vsh>; modulation width from the RF
+        # amplitude and the ion sheath transit time tau_i = 3 s_mean sqrt(M/(2 e <Vsh>)) (Benoit-Cattin/Bernard form)
+        from ..constants import E_CHARGE as _E
+
+        s_mean_b = float(time_average(t_w, s_b))
+        v_dc_b = max(hb.dc, 1e-3)
+        tau_i = 3.0 * s_mean_b * math.sqrt(model.plasma.gas.mass_kg / (2.0 * _E * v_dc_b))
+        w0 = 2.0 * math.pi / period
+        e_width = 2.0 * hb.amplitude(1) / (w0 * tau_i) if tau_i > 0 else 0.0
         cells.append(CellResult(
+            e_ion_mean=hb.dc, e_ion_width=min(e_width, 2.0 * hb.amplitude(1)),
             index=i, r_center=c.r_center, area=c.area,
             vsh_b_dc=hb.dc, vsh_b_1=hb.amplitude(1), vsh_b_min=float(vsh_b.min()), vsh_b_max=float(vsh_b.max()),
             vsh_t_dc=ht.dc, vsh_t_1=ht.amplitude(1),
@@ -218,6 +231,9 @@ def postprocess_tran(res: RawResult, idx: NetlistIndex, model: CircuitModel, per
         hi = harmonics(uni(ip), n_per_period)
         p_port = time_average(t_w, vp * ip)
         p_src = time_average(t_w, vs * i_src)
+        gen = model.project.circuit.ports[port].generator
+        if gen.type == "l_match":
+            p_diss += time_average(t_w, i_src * i_src) * gen.r_gen  # generator internal resistance
         z = hv.c[1] / hi.c[1] if abs(hi.c[1]) > 0 else complex("nan")
         ports.append(PortResult(port=port, v_dc=hv.dc, v_1=hv.amplitude(1), i_1=hi.amplitude(1),
                                 phase_deg=float(np.degrees(np.angle(z))) if z == z else float("nan"),

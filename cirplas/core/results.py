@@ -112,7 +112,7 @@ def write_results(path: str | Path, project: Project, ac: Optional[AcResult] = N
             po = tran.post
             cells = g.require_group("cells")
             for name in ("r_center", "area", "vsh_b_dc", "vsh_b_1", "vsh_b_min", "vsh_b_max", "vsh_t_dc", "vsh_t_1", "s_b_mean", "s_b_max",
-                         "s_t_mean", "p_ohm_bulk", "p_stoc_b", "p_stoc_t", "p_ion_b", "p_ion_t", "p_el_b", "p_el_t", "j_z_1"):
+                         "s_t_mean", "p_ohm_bulk", "p_stoc_b", "p_stoc_t", "p_ion_b", "p_ion_t", "p_el_b", "p_el_t", "j_z_1", "e_ion_mean", "e_ion_width"):
                 cells.create_dataset(name, data=po.radial(name))
             cells.create_dataset("s_e", data=po.radial("s_e"))
             ports = g.require_group("ports")

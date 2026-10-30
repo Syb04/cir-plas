@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..elements import CircuitModel
+from ..project import Project
 from ..netlist.builder import AcSettings, NetlistBuilder, NetlistIndex
 from ..ngspice.shared import RawResult
 from .common import Estimates, RunContext, build_model, check_errors, initial_estimates
@@ -54,6 +55,7 @@ class AcResult:
     iterations: int
     diagnostics: dict = field(default_factory=dict)
     radial_currents: dict = field(default_factory=dict)  # (boundary, level k) -> complex current
+    matching: dict = field(default_factory=dict)  # port -> {"l", "c", "topology", "z_load", "z_in"} for auto-tuned L matches
 
     def radial(self, name: str) -> np.ndarray:
         return np.array([getattr(c, name) for c in self.cells])
@@ -128,13 +130,76 @@ def extract_ac(res: RawResult, idx: NetlistIndex, model: CircuitModel, frequency
                     iterations=iterations, diagnostics=diag, radial_currents=radial_currents)
 
 
+def _auto_match_ports(project: Project) -> list[str]:
+    return [port for port, ps in project.circuit.ports.items() if ps.generator.type == "l_match" and ps.generator.auto]
+
+
+def _without_generators(project: Project, ports: list[str]) -> Project:
+    d = project.model_dump()
+    for port in ports:
+        d["circuit"]["ports"][port]["generator"]["type"] = "none"
+    return Project.model_validate(d)
+
+
+def tune_matching(ctx: RunContext, frequency: float, est: Estimates | None = None) -> dict:
+    """Design the L matches of the auto-tuned ports from the quasi-linear AC impedance seen at the port
+    (sources driving the port chain directly)."""
+    from .matching import design_l_match
+
+    ports = _auto_match_ports(ctx.project)
+    if not ports:
+        return {}
+    plain = _without_generators(ctx.project, ports)
+    ctx_plain = RunContext(project=plain, backend=ctx.backend, log=ctx.log, progress=lambda d: None, cancel=ctx.cancel)
+    ac = run_ac(ctx_plain, frequency=frequency, est=est)
+    out = {}
+    for pr in ac.ports:
+        if pr.port in ports:
+            gen = ctx.project.circuit.ports[pr.port].generator
+            m = design_l_match(pr.z, frequency, gen.r_gen, gen.topology)
+            out[pr.port] = {"l": m.l, "c": m.c, "topology": m.topology, "z_load": pr.z}
+            ctx.log(f"port {pr.port}: L-match {m.topology} L={m.l*1e9:.1f} nH C={m.c*1e12:.1f} pF for Z_load={pr.z:.2f} ohm")
+    return out
+
+
 def run_ac(ctx: RunContext, frequency: float | None = None, est: Estimates | None = None, max_iter: int = 12, relax: float = 0.85,
-           tol: float = 0.02) -> AcResult:
+           tol: float = 0.02, matching: dict | None = None) -> AcResult:
     """Quasi-linear AC solution at one frequency: iterate sheath linearization until the sheath
     voltage amplitudes used for C_lin agree with the solved ones."""
     p = ctx.project
     if frequency is None:
         frequency = p.f_max()
+    if matching is None and _auto_match_ports(p):
+        matching = tune_matching(ctx, frequency, est)
+        # the plasma impedance depends on the drive level: re-design on the matched solution until the generator
+        # sees its own impedance (a few passes)
+        from .matching import design_l_match
+
+        import math as _m
+
+        for k in range(10):
+            trial = run_ac(ctx, frequency=frequency, est=est, max_iter=max_iter, relax=relax, tol=tol, matching=matching)
+            est = trial.estimates
+            done = True
+            for pr in trial.ports:
+                if pr.port in matching:
+                    gen = p.circuit.ports[pr.port].generator
+                    z_in = trial.matching[pr.port].get("z_in", complex("nan"))
+                    if not (abs(z_in - gen.r_gen) <= 0.03 * gen.r_gen):
+                        done = False
+                        m = design_l_match(pr.z, frequency, gen.r_gen, gen.topology)
+                        old = matching[pr.port]
+                        # relaxed update in log space (the plasma load moves with the drive level)
+                        a = 0.5
+                        l_new = _m.exp((1 - a) * _m.log(old["l"]) + a * _m.log(m.l)) if old["topology"] == m.topology else m.l
+                        c_new = _m.exp((1 - a) * _m.log(old["c"]) + a * _m.log(m.c)) if old["topology"] == m.topology else m.c
+                        matching[pr.port] = {"l": l_new, "c": c_new, "topology": m.topology, "z_load": pr.z}
+            ctx.progress({"stage": "match", "iteration": k, "z_in": {q: f"{trial.matching[q].get('z_in', complex('nan')):.2f}" for q in matching}})
+            if done:
+                break
+    matching = matching or {}
+    match_values = {k: (v["l"], v["c"]) for k, v in matching.items()}
+    match_topology = {k: v["topology"] for k, v in matching.items()}
     model = None
     n_cells = None
     result = None
@@ -145,10 +210,16 @@ def run_ac(ctx: RunContext, frequency: float | None = None, est: Estimates | Non
             n_cells = build_radial_mesh(p.geometry, p.numerics.mesh).n_cells
             est = initial_estimates(p, n_cells)
         model = build_model(p, est)
-        netlist, idx = NetlistBuilder(model, "ac", ac=AcSettings(frequency=frequency)).build()
+        netlist, idx = NetlistBuilder(model, "ac", ac=AcSettings(frequency=frequency), match_values=match_values, match_topology=match_topology).build()
         res = ctx.backend.run(netlist, cancel=ctx.cancel)
         check_errors(res, "AC analysis")
         result = extract_ac(res, idx, model, frequency, est, it)
+        result.matching = {k: dict(v) for k, v in matching.items()}
+        for port, node_in in idx.node_match_in.items():
+            v_in = _first(res.get(f"v({node_in})"))
+            i_src = -_first(res.get(idx.i_source[port]))  # current leaving the generator into r_gen
+            if port in result.matching and abs(i_src) > 0:
+                result.matching[port]["z_in"] = v_in / i_src  # impedance seen after the generator resistance
         v1_b_new = np.abs(result.radial("vsh_b"))
         v1_t_new = np.abs(result.radial("vsh_t"))
         change = max(float(np.max(np.abs(v1_b_new - est.v1_b) / np.maximum(est.v1_b, 1.0))),

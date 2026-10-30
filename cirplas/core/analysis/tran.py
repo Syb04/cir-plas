@@ -106,14 +106,16 @@ def run_tran(ctx: RunContext, ac: Optional[AcResult] = None) -> TranResult:
     cycles = spec.cycles_min
     ramp = spec.ramp_cycles * (1.0 / f_max)
 
-    _, idx0 = NetlistBuilder(model, "tran", tran=TranSettings(t_max, 1.0, t_max, ramp)).build()
+    match_values = {k: (v["l"], v["c"]) for k, v in (ac.matching or {}).items()}
+    match_topology = {k: v["topology"] for k, v in (ac.matching or {}).items()}
+    _, idx0 = NetlistBuilder(model, "tran", tran=TranSettings(t_max, 1.0, t_max, ramp), match_values=match_values, match_topology=match_topology).build()
     clamp_nodes = {port: _forced_nodes(model, idx0, port) for port in bias_ports}
 
     def one_run(n_cycles: int, bias: dict[str, float]):
         clamp = {port: (vb, clamp_nodes[port]) for port, vb in bias.items()}
         t_stop = n_cycles * period
         settings = TranSettings(t_step=t_max, t_stop=t_stop, t_max=t_max, ramp_time=ramp, bias_clamp=clamp)
-        netlist, idx = NetlistBuilder(model, "tran", tran=settings).build()
+        netlist, idx = NetlistBuilder(model, "tran", tran=settings, match_values=match_values, match_topology=match_topology).build()
         res = ctx.backend.run(netlist, cancel=ctx.cancel)
         check_errors(res, "transient analysis")
         post = postprocess_tran(res, idx, model, period, spec.meas_cycles, n_per_period=spec.pts_per_cycle)

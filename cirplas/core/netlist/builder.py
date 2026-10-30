@@ -69,6 +69,8 @@ class NetlistIndex:
     chain_levels: dict[int, list[str]]  # boundary -> level kinds in order
     sheath_instances_b: list[str]
     sheath_instances_t: list[str]
+    node_generator: dict[str, str] = field(default_factory=dict)  # port -> generator (open-circuit) node when an L match is used
+    node_match_in: dict[str, str] = field(default_factory=dict)  # port -> node between r_gen and the matching network
 
 
 # Nonlinear sheath capacitor. u = softplus(V) = (V + sqrt(V^2 + eps^2))/2  (>= 0, -> V for V >> eps, -> 0 for V << -eps)
@@ -143,7 +145,10 @@ def validate_user_netlist(text: str) -> list[str]:
 
 class NetlistBuilder:
     def __init__(self, model: CircuitModel, mode: Literal["tran", "ac"], tran: Optional[TranSettings] = None, ac: Optional[AcSettings] = None,
-                 include_radial: bool = True, radial_kinds: Optional[set] = None, flux_chain: bool = True, diode_rs: float = 0.0):
+                 include_radial: bool = True, radial_kinds: Optional[set] = None, flux_chain: bool = True, diode_rs: float = 0.0,
+                 match_values: Optional[dict] = None, match_topology: Optional[dict] = None):
+        self.match_values = match_values or {}  # port -> (L, C) of the matching network (auto tuning)
+        self.match_topology = match_topology or {}
         self.include_radial = include_radial  # debug: False -> no radial branches / flux chains (independent columns)
         self.radial_kinds = radial_kinds  # debug: restrict radial levels to these kinds (None = all)
         self.flux_chain = flux_chain  # debug: False -> radial branches without induced EMF
@@ -394,9 +399,29 @@ class NetlistBuilder:
         L = self.lines
         L.append(f"* ---- port {port}")
         src_node = f"n{port}s"
-        L.append(self._source_line(port, src_node, ps))
-        idx.i_source[port] = nm.vec_branch(f"Bsrc_{port}" if self.mode == "tran" else f"Vsrc_{port}")
-        idx.node_source[port] = src_node
+        gen = ps.generator
+        if gen.type == "l_match":
+            # generator (open-circuit amplitude = source amplitude) -> r_gen -> L network -> port chain
+            L.append(self._source_line(port, f"n{port}g", ps))
+            idx.i_source[port] = nm.vec_branch(f"Bsrc_{port}" if self.mode == "tran" else f"Vsrc_{port}")
+            idx.node_source[port] = f"n{port}g"
+            L.append(f"Rgen_{port} n{port}g n{port}r {fmt(gen.r_gen)}")
+            l_val, c_val = self.match_values.get(port, (gen.l, gen.c))
+            if l_val is None or c_val is None:
+                raise ValueError(f"port {port}: matching network values are not set (auto tuning needs an AC pre-solve)")
+            topo = self.match_topology.get(port, gen.topology if gen.topology != "auto" else "shunt_c_generator")
+            if topo == "shunt_c_generator":
+                L.append(f"Cmat_{port} n{port}r 0 {fmt(c_val)}")
+                L.append(f"Lmat_{port} n{port}r {src_node} {fmt(l_val)}")
+            else:
+                L.append(f"Lmat_{port} n{port}r {src_node} {fmt(l_val)}")
+                L.append(f"Cmat_{port} {src_node} 0 {fmt(c_val)}")
+            idx.node_generator[port] = f"n{port}g"
+            idx.node_match_in[port] = f"n{port}r"
+        else:
+            L.append(self._source_line(port, src_node, ps))
+            idx.i_source[port] = nm.vec_branch(f"Bsrc_{port}" if self.mode == "tran" else f"Vsrc_{port}")
+            idx.node_source[port] = src_node
         cur = src_node
         if ps.l_feed > 0:
             L.append(f"Lfeed_{port} {cur} n{port}l {fmt(ps.l_feed)}")

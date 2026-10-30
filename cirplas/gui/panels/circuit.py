@@ -93,6 +93,12 @@ class CircuitPanel(QWidget):
         f.add_float("給電インダクタンス L_feed", "circuit.ports.W.l_feed", "nH", 1e9,
                     "理想電圧源と直列。共振により電極電圧が大きく増幅されることがあるため既定は 0")
         f.add_float("ストレイ容量 C_stray", "circuit.ports.W.c_stray", "pF", 1e12)
+        f.add_choice("発振器と整合器", "circuit.ports.W.generator.type", [("none", "理想電圧源（既定）"), ("l_match", "50 Ω 発振器 + L 型整合器")],
+                     "l_match: 電源振幅は発振器の開放電圧。auto なら AC 解析のポートインピーダンスから L/C を自動設計")
+        f.add_float("発振器インピーダンス r_gen", "circuit.ports.W.generator.r_gen", "Ω")
+        f.add_bool("自動チューニング", "circuit.ports.W.generator.auto")
+        f.add_float("整合 L（手動）", "circuit.ports.W.generator.l", "nH", 1e9)
+        f.add_float("整合 C（手動）", "circuit.ports.W.generator.c", "pF", 1e12)
         bl.addWidget(f)
         lay.addWidget(group("ポート W（ウェハ電極）", box))
         fr = BoundForm(model)
