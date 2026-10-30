@@ -10,8 +10,8 @@ Windows ネイティブ GUI（PySide6）を予定しています。
 
 ## 状態
 
-M1（コアとワーカ CLI）実装済み。検証 V1（単セル）、V2（線形定在波）、V4（磁束チェーン・電荷保存）が通ります。
-GUI（M2 以降）は未着手です。
+M1（コアとワーカ CLI）と M2 の GUI 骨格（幾何・プラズマ・回路・数値設定パネル、断面図、ネットリスト表示、実行管理、結果表示）を実装済み。
+検証 V1（単セル）、V2（線形定在波）、V4（磁束チェーン・電荷保存）、V5（FR 結合の傾向）が通ります。
 
 ## 使い方（開発者向け）
 
@@ -20,6 +20,7 @@ GUI（M2 以降）は未着手です。
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/pytest -q tests                # 単体・統合・検証テスト
 .venv/bin/cirplas-solve cirplas/data/examples/demo_300mm_60MHz.cirplas.json -o demo.h5 --mode tran
+.venv/bin/pip install -e ".[gui]" && .venv/bin/cirplas-gui   # GUI（PySide6）
 ```
 
 結果は HDF5（`/ac`, `/tran`, `/mesh`, `/plasma` グループ）に書き出されます。形式は仕様書 03 章 §4.2 を参照してください。

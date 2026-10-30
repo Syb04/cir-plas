@@ -98,7 +98,9 @@ def find_library(explicit: Optional[str] = None) -> str:
         candidates.append(env)
     if sys.platform.startswith("win"):
         here = os.path.dirname(os.path.abspath(__file__))
-        candidates += [os.path.join(here, "ngspice.dll"), "ngspice.dll", r"C:\Spice64\bin_dll\ngspice.dll"]
+        for name in ("ngspice.dll", "libngspice-0.dll", "libngspice.dll"):
+            candidates += [os.path.join(here, name), os.path.join(os.path.dirname(sys.executable), name), name]
+        candidates += [r"C:\Spice64\bin_dll\ngspice.dll", r"C:\msys64\mingw64\bin\libngspice-0.dll"]
     else:
         for name in ("ngspice", "libngspice.so.0", "libngspice.so", "libngspice.dylib"):
             found = ctypes.util.find_library(name) if not name.startswith("lib") else name

@@ -25,6 +25,7 @@ def main(argv=None) -> int:
     ap.add_argument("--mode", choices=["ac", "tran", "sc"], default=None, help="override numerics.analysis")
     ap.add_argument("--progress", choices=["jsonl", "text", "none"], default="text")
     ap.add_argument("--netlist-out", default=None, help="also write the generated netlist(s) to this .cir path")
+    ap.add_argument("--cancel-file", default=None, help="the run is cancelled as soon as this file exists")
     args = ap.parse_args(argv)
 
     project = load_project(args.project)
@@ -49,7 +50,9 @@ def main(argv=None) -> int:
 
     try:
         backend = get_backend(project.numerics.ngspice)
-        ctx = RunContext(project=project, backend=backend, log=log, progress=progress)
+        cancel_path = Path(args.cancel_file) if args.cancel_file else None
+        ctx = RunContext(project=project, backend=backend, log=log, progress=progress,
+                         cancel=(lambda: cancel_path.exists()) if cancel_path else (lambda: False))
         log(f"CirPlas solve: project={project.name} mode={mode} ngspice={getattr(backend, 'version', '?')}")
         ac = run_ac(ctx)
         netlists = {"ac": NetlistBuilder(ac.model, "ac", ac=AcSettings(frequency=ac.frequency)).build()[0]}

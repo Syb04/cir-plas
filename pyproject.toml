@@ -22,6 +22,7 @@ dev = ["pytest>=8", "pytest-qt>=4.4"]
 
 [project.scripts]
 cirplas-solve = "cirplas.worker.cli:main"
+cirplas-gui = "cirplas.gui.app:main"
 
 [tool.setuptools.packages.find]
 include = ["cirplas*"]
