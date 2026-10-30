@@ -24,6 +24,7 @@ gui-dev = ["pytest-qt>=4.4"]
 [project.scripts]
 cirplas-solve = "cirplas.worker.cli:main"
 cirplas-gui = "cirplas.gui.app:main"
+cirplas-sweep = "cirplas.worker.sweep_cli:main"
 
 [tool.setuptools.packages.find]
 include = ["cirplas*"]
