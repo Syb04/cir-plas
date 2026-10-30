@@ -11,10 +11,10 @@ from ..widgets.paramform import BoundForm, SciSpin, group
 
 class SourcesTable(QTableWidget):
     def __init__(self, model: ProjectModel, port: str, parent=None):
-        super().__init__(0, 3, parent)
+        super().__init__(0, 4, parent)
         self.model = model
         self.port = port
-        self.setHorizontalHeaderLabels(["周波数 [MHz]", "振幅 [V]", "位相 [deg]"])
+        self.setHorizontalHeaderLabels(["周波数 [MHz]", "振幅 [V]", "位相 [deg]", "電力指定 [W]（空欄=電圧指定）"])
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.verticalHeader().setVisible(False)
         self.setMinimumHeight(110)
@@ -35,23 +35,30 @@ class SourcesTable(QTableWidget):
             self.setItem(row, 0, QTableWidgetItem(f"{s['f']/1e6:.6g}"))
             self.setItem(row, 1, QTableWidgetItem(f"{s['v']:.6g}"))
             self.setItem(row, 2, QTableWidgetItem(f"{s.get('phase_deg', 0.0):.6g}"))
+            pw = s.get("power")
+            self.setItem(row, 3, QTableWidgetItem("" if pw is None else f"{pw:.6g}"))
         self._blocked = False
 
     def _changed(self, row: int, col: int) -> None:
         if self._blocked:
             return
+        text = self.item(row, col).text().strip()
+        if col == 3:
+            if text == "":
+                self.model.set(f"{self.path}.{row}.power", None)
+                return
         try:
-            val = SciSpin.parse(self.item(row, col).text())
+            val = SciSpin.parse(text)
         except ValueError:
             return
-        key = ["f", "v", "phase_deg"][col]
+        key = ["f", "v", "phase_deg", "power"][col]
         if key == "f":
             val *= 1e6
         self.model.set(f"{self.path}.{row}.{key}", val)
 
     def add(self) -> None:
         srcs = list(self.model.get(self.path, []) or [])
-        srcs.append({"f": 2e6, "v": 100.0, "phase_deg": 0.0})
+        srcs.append({"f": 2e6, "v": 100.0, "phase_deg": 0.0, "power": None})
         self.model.set(self.path, srcs)
 
     def remove(self) -> None:

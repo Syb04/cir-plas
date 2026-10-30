@@ -83,3 +83,41 @@ def test_v5_mesh_refinement_stability(backend):
     wafer = np.array([c.region == "wafer" for c in a.model.mesh.cells])
     rel = np.abs(va[wafer] - vb_i[wafer]) / va[wafer]
     assert np.max(rel) < 0.05, np.max(rel)
+
+
+def test_v5_separate_electrode_equivalence(backend):
+    """A conductive FR fed through the ESC (esc_coupled) must agree with the separate-electrode representation
+    in which the FR electrode F is tied to W through the lumped coupling capacitance C_WF = sum of the per-cell
+    series capacitances of the dielectric layers under the FR (spec 05 V5 item 4)."""
+    from cirplas.core.constants import EPS0
+    from cirplas.core.materials import resolve_material
+
+    p = _project()
+    ac0 = _ac(backend, p)
+    cells = ac0.model.mesh.cells
+    fr_cells = [c for c in cells if c.region == "fr"]
+    # distributed coupling capacitance: ESC ceramic + coupling ring in series, per cell, summed over the FR area
+    c_wf = 0.0
+    for c in fr_cells:
+        inv = 0.0
+        for L in c.bottom_layers[:-1]:  # all layers below the (conductive) FR
+            inv += L.t / (L.material.eps_r * EPS0 * c.area)
+        c_wf += 1.0 / inv
+    d = p.model_dump()
+    fr = next(r for r in d["geometry"]["regions"] if r["name"] == "fr")
+    fr["conductor"] = "F"
+    fr["stack"] = [fr["stack"][-1]]  # only the conductive FR itself sits on the F electrode
+    fr["z_offset"] = fr["z_offset"] + sum(L["t"] for L in next(r for r in p.model_dump()["geometry"]["regions"] if r["name"] == "fr")["stack"][:-1])
+    d["circuit"]["fr"] = {"type": "separate", "tuning": {"type": "coupling_to_w", "c": c_wf, "r": 0.0}}
+    d["circuit"]["c_wf"] = {"mode": "manual", "value": 0.0}
+    p2 = Project.model_validate(d)
+    ac1 = _ac(backend, p2)
+    v0 = np.abs(ac0.radial("vsh_b"))
+    v1 = np.abs(ac1.radial("vsh_b"))
+    fr_idx = [i for i, c in enumerate(cells) if c.region == "fr"]
+    areas = ac0.radial("area")
+    vfr0 = np.average(v0[fr_idx], weights=areas[fr_idx])
+    vfr1 = np.average(v1[fr_idx], weights=areas[fr_idx])
+    assert abs(vfr1 - vfr0) / vfr0 < 0.03, (vfr0, vfr1)
+    wafer = [i for i, c in enumerate(cells) if c.region == "wafer"]
+    assert np.max(np.abs(v1[wafer] - v0[wafer]) / v0[wafer]) < 0.03

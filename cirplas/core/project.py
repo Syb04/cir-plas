@@ -221,8 +221,9 @@ class PlasmaSpec(StrictModel):
 # --------------------------------------------------------------------------- circuit
 class SourceSpec(StrictModel):
     f: float = Field(..., gt=0, description="frequency [Hz]")
-    v: float = Field(..., ge=0, description="voltage amplitude [V]")
+    v: float = Field(..., ge=0, description="voltage amplitude [V] (initial guess when power is given)")
     phase_deg: float = 0.0
+    power: Optional[float] = Field(None, gt=0, description="delivered power target [W]; the amplitude is then iterated")
 
 
 class PortSpec(StrictModel):

@@ -70,7 +70,13 @@ def main(argv=None) -> int:
             ac = run_ac(ctx)
         netlists = {"ac": NetlistBuilder(ac.model, "ac", ac=AcSettings(frequency=ac.frequency)).build()[0]}
         tran = None
-        if mode == "tran" or (mode == "sc" and project.numerics.density_iteration.refine_with_tran):
+        from ..core.analysis.power_drive import power_targets, run_power_drive
+
+        if power_targets(project):
+            log("power-specified drive: iterating source amplitudes")
+            project, ac, tran, pd = run_power_drive(ctx, mode=mode if mode != "sc" else "tran")
+            log(f"power drive {'converged' if pd.converged else 'NOT converged'}: amplitudes={pd.amplitudes}")
+        elif mode == "tran" or (mode == "sc" and project.numerics.density_iteration.refine_with_tran):
             tran = run_tran(ctx, ac=ac)
             period = tran.period
             netlists["tran"] = NetlistBuilder(tran.model, "tran", tran=TranSettings(
