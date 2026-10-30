@@ -29,6 +29,7 @@ class RunPanel(QWidget):
         self.mode = QComboBox()
         self.mode.addItem("AC（線形・瞬時）", "ac")
         self.mode.addItem("TRAN（非線形）", "tran")
+        self.mode.addItem("SC（密度自己無撞着 + AC）", "sc")
         self.btn_run = QPushButton("実行 (F5)")
         self.btn_cancel = QPushButton("中止 (Esc)")
         self.btn_cancel.setEnabled(False)

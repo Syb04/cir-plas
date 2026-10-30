@@ -49,6 +49,11 @@ def _write_mesh(f: h5py.File, model) -> None:
     g.create_dataset("l_gap", data=np.array([c.l_gap for c in model.mesh.cells]))
     g.create_dataset("l_p", data=np.array([c.l_p for c in model.mesh.cells]))
     g.create_dataset("z_surface_b", data=np.array([c.z_surface_b for c in model.mesh.cells]))
+    regions = model.project.geometry.regions
+    z_off = np.array([regions[int(k)].z_offset for k in rm.region_index])
+    g.create_dataset("z_offset", data=z_off)
+    g.create_dataset("z_surface_abs", data=z_off + np.array([c.z_surface_b for c in model.mesh.cells]))
+    g.create_dataset("z_bulk", data=np.array([c.z_bulk for c in model.mesh.cells]))
     g.create_dataset("z_top_conductor", data=np.array([c.z_top_conductor for c in model.mesh.cells]))
     pl = model.plasma
     gp = f.require_group("plasma")
@@ -59,7 +64,7 @@ def _write_mesh(f: h5py.File, model) -> None:
 
 
 def write_results(path: str | Path, project: Project, ac: Optional[AcResult] = None, tran=None, netlists: Optional[dict[str, str]] = None,
-                  log: Optional[list[str]] = None, ngspice_version: str = "", mode: str = "") -> None:
+                  log: Optional[list[str]] = None, ngspice_version: str = "", mode: str = "", density=None) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with h5py.File(path, "w") as f:
@@ -116,6 +121,10 @@ def write_results(path: str | Path, project: Project, ac: Optional[AcResult] = N
                 _write_scalar_attrs(gp, asdict(pr))
             _write_scalar_attrs(g.require_group("metrics"), {"p_source_total": po.p_source_total, "p_total_dissipated": po.p_total_dissipated,
                                                                 "power_balance_error": po.power_balance_error, "p_ohm_radial_total": po.p_ohm_radial_total})
+            if po.maps:
+                gm = g.require_group("map")
+                for k, v in po.maps.items():
+                    gm.create_dataset(k, data=np.asarray(v))
             if project.outputs.save_waveforms:
                 w = g.require_group("window")
                 t = tran.raw.scale
@@ -126,6 +135,14 @@ def write_results(path: str | Path, project: Project, ac: Optional[AcResult] = N
                 data = np.stack([tran.raw.vectors[n][m] for n in names], axis=1)
                 w.create_dataset("vectors", data=data, compression="gzip", compression_opts=4)
                 w.create_dataset("names", data=np.array(names, dtype=h5py.string_dtype()))
+        if density is not None:
+            g = f.require_group("iteration")
+            g.create_dataset("r_centers", data=density.r_centers)
+            g.create_dataset("n", data=np.array(density.n_history))
+            g.create_dataset("te", data=np.array(density.te_history))
+            g.create_dataset("residual", data=np.array(density.residuals))
+            g.create_dataset("relax", data=np.array(density.relax_history))
+            _write_scalar_attrs(g, {"converged": bool(density.converged), "iterations": density.iterations, "d_a": density.notes.get("d_a")})
         if log:
             f.create_dataset("log", data="\n".join(log))
 

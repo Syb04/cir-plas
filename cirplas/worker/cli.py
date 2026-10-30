@@ -54,19 +54,30 @@ def main(argv=None) -> int:
         ctx = RunContext(project=project, backend=backend, log=log, progress=progress,
                          cancel=(lambda: cancel_path.exists()) if cancel_path else (lambda: False))
         log(f"CirPlas solve: project={project.name} mode={mode} ngspice={getattr(backend, 'version', '?')}")
-        ac = run_ac(ctx)
+        density = None
+        if mode == "sc":
+            from ..core.analysis.density import run_density_iteration
+
+            density = run_density_iteration(ctx)
+            ac = density.ac
+            log(f"density iteration {'converged' if density.converged else 'NOT converged'} after {density.iterations} iterations")
+            # continue with the converged density profile
+            from ..core.project import Project as _P
+
+            project = _P.model_validate_json(density.notes["final_project"])
+            ctx = RunContext(project=project, backend=backend, log=log, progress=progress, cancel=ctx.cancel)
+        else:
+            ac = run_ac(ctx)
         netlists = {"ac": NetlistBuilder(ac.model, "ac", ac=AcSettings(frequency=ac.frequency)).build()[0]}
         tran = None
-        if mode in ("tran", "sc"):
-            if mode == "sc":
-                log("self-consistent density iteration is not implemented yet (Phase 2); running TRAN with the prescribed density")
+        if mode == "tran" or (mode == "sc" and project.numerics.density_iteration.refine_with_tran):
             tran = run_tran(ctx, ac=ac)
             period = tran.period
             netlists["tran"] = NetlistBuilder(tran.model, "tran", tran=TranSettings(
                 t_step=period / project.numerics.tran.pts_per_cycle, t_stop=tran.cycles * period,
                 t_max=period / project.numerics.tran.pts_per_cycle, ramp_time=project.numerics.tran.ramp_cycles * period)).build()[0]
         write_results(out, project, ac=ac, tran=tran, netlists=netlists, log=log_lines,
-                      ngspice_version=str(getattr(backend, "version", "")), mode=mode)
+                      ngspice_version=str(getattr(backend, "version", "")), mode=mode, density=density)
         if args.netlist_out:
             Path(args.netlist_out).write_text(netlists.get("tran", netlists["ac"]), encoding="utf-8")
         log(f"done in {time.time()-t0:.1f} s -> {out}")

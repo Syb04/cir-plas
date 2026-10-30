@@ -65,6 +65,7 @@ class TranPostResult:
     p_source_total: float
     power_balance_error: float
     extra: dict = field(default_factory=dict)
+    maps: dict = field(default_factory=dict)  # 2D (r, z) arrays: p_ohm [W/m^3], jz_1 [A/m^2], jr_1 [A/m^2], z_mid [m]
 
     def radial(self, name: str) -> np.ndarray:
         return np.array([getattr(c, name) for c in self.cells])
@@ -104,8 +105,15 @@ def postprocess_tran(res: RawResult, idx: NetlistIndex, model: CircuitModel, per
     cells: list[CellResult] = []
     p_diss = 0.0
     nz = idx.n_z
+    n_c = idx.n_cells
+    # 2D maps on (cell, bulk layer)
+    map_p_ohm = np.zeros((n_c, nz))
+    map_jz = np.zeros((n_c, nz))
+    map_jr = np.zeros((max(n_c - 1, 1), nz))
+    map_pr = np.zeros((max(n_c - 1, 1), nz))  # radial ohmic power density per boundary level [W/m^3]
     # radial ohmic power per boundary level (distributed half/half to the adjacent cells)
     radial_cell_share = np.zeros(idx.n_cells)
+    radial_layer_share = np.zeros((n_c, nz))
     p_rad_total = 0.0
     for be in model.boundaries:
         b = be.boundary
@@ -126,6 +134,12 @@ def postprocess_tran(res: RawResult, idx: NetlistIndex, model: CircuitModel, per
             if le.level.kind == "bulk":
                 radial_cell_share[b.index] += 0.5 * p
                 radial_cell_share[b.index + 1] += 0.5 * p
+                j = le.level.index
+                radial_layer_share[b.index, j] += 0.5 * p
+                radial_layer_share[b.index + 1, j] += 0.5 * p
+                area_r = 2.0 * np.pi * b.r * le.level.thickness
+                map_jr[b.index, j] = harmonics(uni(i_r), n_per_period).amplitude(1) / area_r
+                map_pr[b.index, j] = p / (area_r * b.dr)
             else:
                 p_diss += p  # layer losses counted globally
     for i, ce in enumerate(model.cells):
@@ -154,9 +168,13 @@ def postprocess_tran(res: RawResult, idx: NetlistIndex, model: CircuitModel, per
             i_a = vec(idx.i_bulk[i][j])
             i_b = vec(idx.i_bulk[i][j].replace(f"lbz_{n1}_{j+1}a", f"lbz_{n1}_{j+1}b"))
             d = ce.bulk[j]
-            p_ohm += 0.5 * d.r * (time_average(t_w, i_a**2) + time_average(t_w, i_b**2))
+            p_layer = 0.5 * d.r * (time_average(t_w, i_a**2) + time_average(t_w, i_b**2))
+            p_ohm += p_layer
+            amp = harmonics(uni(i_a), n_per_period).amplitude(1) / c.area
+            map_jz[i, j] = amp
+            map_p_ohm[i, j] = (p_layer + radial_layer_share[i, j]) / (c.area * c.bulk_thickness[j])
             if j == nz // 2:
-                jz1 = harmonics(uni(i_a), n_per_period).amplitude(1) / c.area
+                jz1 = amp
         p_ohm += radial_cell_share[i]
         s_b = ce.sheath_b.width(vsh_b)
         s_t = ce.sheath_t.width(vsh_t)
@@ -208,6 +226,9 @@ def postprocess_tran(res: RawResult, idx: NetlistIndex, model: CircuitModel, per
     # DC power flowing into the series blocking capacitors (charging): (V_src,dc - V_port,dc) * I_dc with V_src,dc = 0
     p_cap_dc = sum(-pr.v_dc * pr.i_dc for pr in ports)
     pbe = (p_src_total - p_diss - p_cap_dc) / p_src_total if p_src_total else float("nan")
+    z_mid = np.array([c.bulk_mid for c in model.mesh.cells])  # (n_c, nz) heights above each cell's bottom conductor
+    maps = {"p_ohm": map_p_ohm, "jz_1": map_jz, "jr_1": map_jr, "p_ohm_radial": map_pr, "z_mid": z_mid,
+            "r_centers": np.array([c.r_center for c in model.mesh.cells]), "r_boundaries": np.array([b.boundary.r for b in model.boundaries])}
     return TranPostResult(t_window=t_u, cells=cells, ports=ports, p_ohm_radial_total=p_rad_total,
                           p_total_dissipated=p_diss, p_source_total=p_src_total, power_balance_error=pbe,
-                          extra={"p_capacitor_dc": p_cap_dc})
+                          extra={"p_capacitor_dc": p_cap_dc}, maps=maps)

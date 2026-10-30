@@ -18,7 +18,12 @@ class ResultData:
         self.ac: dict | None = None
         self.tran: dict | None = None
         self.window: dict | None = None
+        self.iteration: dict | None = None
         with h5py.File(self.path, "r") as f:
+            if "iteration" in f:
+                g = f["iteration"]
+                self.iteration = {k: g[k][()] for k in g}
+                self.iteration["attrs"] = dict(g.attrs)
             self.meta = {k: (v.decode() if isinstance(v, bytes) else v) for k, v in f["meta"].attrs.items()}
             if "mesh" in f:
                 self.mesh = {k: f["mesh"][k][()] for k in f["mesh"]}
@@ -37,6 +42,8 @@ class ResultData:
                              "cells": {k: g["cells"][k][()] for k in g["cells"]},
                              "ports": {p: dict(g["ports"][p].attrs) for p in g["ports"]},
                              "history": json.loads(g["history"][()].decode() if isinstance(g["history"][()], bytes) else str(g["history"][()]))}
+                if "map" in g:
+                    self.tran["map"] = {k: g["map"][k][()] for k in g["map"]}
                 if "window" in g:
                     w = g["window"]
                     names = [n.decode() if isinstance(n, bytes) else str(n) for n in w["names"][()]]

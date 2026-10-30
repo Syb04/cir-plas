@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QGridLayout, QHBoxLayout, Q
                                QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
 
 from ..results_io import ResultData
+from .results_extra import DensityView, EdgeView, MapView, SpectrumView
 
 RADIAL_QUANTITIES = [
     # key, label, unit, scale, which (tran/ac/both)
@@ -234,9 +235,17 @@ class ResultsPanel(QWidget):
         self.overview = OverviewTable()
         self.radial = RadialPlot()
         self.wave = WaveformPlot()
+        self.map = MapView()
+        self.edge = EdgeView()
+        self.spectrum = SpectrumView()
+        self.density = DensityView()
         self.tabs.addTab(self.overview, "概要")
         self.tabs.addTab(self.radial, "径方向プロファイル")
+        self.tabs.addTab(self.map, "2D マップ")
         self.tabs.addTab(self.wave, "波形")
+        self.tabs.addTab(self.spectrum, "スペクトル")
+        self.tabs.addTab(self.edge, "エッジ")
+        self.tabs.addTab(self.density, "密度")
         lay.addWidget(self.label)
         lay.addWidget(self.tabs, 1)
         self.data: ResultData | None = None
@@ -246,4 +255,8 @@ class ResultsPanel(QWidget):
         self.label.setText(f"結果: {path}")
         self.overview.set_data(self.data)
         self.radial.set_data(self.data)
+        self.map.set_data(self.data)
         self.wave.set_data(self.data)
+        self.spectrum.set_data(self.data)
+        self.edge.set_data(self.data)
+        self.density.set_data(self.data)

@@ -466,7 +466,11 @@ class NetlistBuilder:
         ng = self.project.numerics.ngspice
         L = self.lines
         L.append("* ---- analysis")
-        opts = {"rshunt": "1e12", "reltol": "1e-3", "abstol": "1e-10", "vntol": "1e-6", "chgtol": "1e-16", "itl4": "50", "gmin": "1e-12"}
+        # Absolute tolerances are scaled to the circuit (currents of 1-100 A, charges of ~1e-7 C): the SPICE defaults
+        # (abstol 1e-12 A, chgtol 1e-14 C) cannot be met in double precision at the first time step of larger meshes
+        # (companion conductances ~1e13 S) and make ngspice 42 abort with "timestep too small" although the operating
+        # point is fine. abstol = 1e-6 A is 1e-8 of the RF current; itl4 raised as a safety margin.
+        opts = {"rshunt": "1e12", "reltol": "1e-3", "abstol": "1e-6", "vntol": "1e-5", "chgtol": "1e-12", "itl4": "300", "gmin": "1e-12"}
         if self.mode == "tran":
             opts["method"] = ng.method
             if ng.method == "gear":
