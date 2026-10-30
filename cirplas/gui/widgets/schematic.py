@@ -17,14 +17,14 @@ from typing import Callable, Optional
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGraphicsItem, QGraphicsObject, QGraphicsScene,
-                               QGraphicsSimpleTextItem, QGraphicsView, QHBoxLayout, QLabel, QLineEdit, QMenu, QPushButton,
+                               QGraphicsSimpleTextItem, QGraphicsView, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton,
                                QScrollArea, QSplitter, QToolButton, QVBoxLayout, QWidget)
 
 from ...core.netlist.user_elements import KINDS, UNITS, UserElement, UserNetlist, format_eng
 from ...core.project import PortSpec, SourceSpec
 from .. import theme
 from ..project_model import ProjectModel
-from .paramform import BoundForm, SciSpin
+from .paramform import BoundForm, SciSpin, _mark_invalid
 
 U = 44.0  # grid unit [px]
 ELEMENT_LEN = 2 * U
@@ -346,18 +346,32 @@ class UserElementForm(QWidget):
         form.addRow("ノード 1", self.n1)
         form.addRow("ノード 2", self.n2)
         form.addRow(f"値 [{UNITS[element.kind]}]", self.value)
-        self.name.editingFinished.connect(lambda: self._commit(name=self.name.text().strip()))
+        self.kind_letter = element.kind
+        self.name.editingFinished.connect(self._commit_name)
         self.value.editingFinished.connect(self._commit_value)
-        self.n1.currentTextChanged.connect(lambda s: self._commit(n1=s.strip()))
-        self.n2.currentTextChanged.connect(lambda s: self._commit(n2=s.strip()))
+        for cb, key in ((self.n1, "n1"), (self.n2, "n2")):
+            cb.activated.connect(lambda _i, cb=cb, key=key: self._commit(**{key: cb.currentText().strip()}))
+            cb.lineEdit().editingFinished.connect(lambda cb=cb, key=key: self._commit(**{key: cb.currentText().strip()}))
         if element.tail:
             form.addRow("追加パラメータ", QLabel(element.tail))
 
+    def _commit_name(self) -> None:
+        name = self.name.text().strip()
+        ok = len(name) > 1 and name[0].upper() == self.kind_letter and " " not in name
+        _mark_invalid(self.name, not ok)
+        if ok:
+            self._commit(name=name)
+
     def _commit_value(self) -> None:
         try:
-            self._commit(value=self.value.value())
+            v = self.value.value()
         except ValueError:
-            pass
+            _mark_invalid(self.value, True)
+            return
+        ok = v > 0 or self.kind_letter == "V"
+        _mark_invalid(self.value, not ok)
+        if ok:
+            self._commit(value=v)
 
     def _commit(self, **changes) -> None:
         if self._blocked or not changes:
@@ -579,12 +593,12 @@ class CircuitEditor(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         bar = QHBoxLayout()
         self.btn_add = QToolButton()
-        self.btn_add.setText("素子を追加 ▾")
+        self.btn_add.setText("素子を追加")
         self.btn_add.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.menu_add = QMenu(self)
         self.btn_add.setMenu(self.menu_add)
         self.btn_struct = QToolButton()
-        self.btn_struct.setText("構成 ▾")
+        self.btn_struct.setText("構成")
         self.btn_struct.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.menu_struct = QMenu(self)
         self.menu_struct.aboutToShow.connect(lambda: self._fill_structure_menu(self.menu_struct))
@@ -666,7 +680,13 @@ class CircuitEditor(QWidget):
             return
         el = els[index]
         for k, v in changes.items():
-            if k in ("name", "n1", "n2", "value") and v not in (None, ""):
+            if v in (None, ""):
+                continue
+            if k == "name" and (len(v) < 2 or v[0].upper() != el.kind or " " in v):
+                continue
+            if k == "value" and el.kind != "V" and float(v) <= 0:
+                continue
+            if k in ("name", "n1", "n2", "value"):
                 setattr(el, k, v)
         self.netlist.touch(el)
         self._selected_id = f"user.{index}"
@@ -791,9 +811,20 @@ class CircuitEditor(QWidget):
         if idx >= 0:
             dlg.kind.setCurrentIndex(idx)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            k, name, n1, n2, value = dlg.result_spec()
-            if n1 and n2 and n1 != n2:
-                self.add_user_element(k, n1, n2, value, name)
+            try:
+                k, name, n1, n2, value = dlg.result_spec()
+            except ValueError:
+                QMessageBox.warning(self, "素子を追加", "値を数値で入力してください（例: 100p, 2.2n, 50）。")
+                return
+            if not n1 or not n2 or n1 == n2:
+                QMessageBox.warning(self, "素子を追加", "両端のノードには異なる名前を指定してください。")
+                return
+            if k != "V" and value <= 0:
+                QMessageBox.warning(self, "素子を追加", "R / L / C の値は正の数にしてください。")
+                return
+            if name[0].upper() != k:
+                name = k + name[1:] if len(name) > 1 else self.netlist.next_name(k)
+            self.add_user_element(k, n1, n2, value, name)
 
     def _fill_structure_menu(self, m: QMenu) -> None:
         m.clear()

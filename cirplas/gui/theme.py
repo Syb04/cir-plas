@@ -7,10 +7,11 @@ selected mode is persisted with ``QSettings``.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QObject, QSettings, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPalette
+from PySide6.QtCore import QObject, QPointF, QSettings, QStandardPaths, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPalette, QPen
 from PySide6.QtWidgets import QApplication
 
 LIGHT = dict(
@@ -163,6 +164,51 @@ def series_pen(k: int, width: float = 2.0):
     return manager().series_pen(k, width)
 
 
+# ---------------------------------------------------------------------- generated indicator images
+def _chevron_png(path: Path, color: str, direction: str, size: int, scale: int) -> None:
+    px = size * scale
+    img = QImage(px, px, QImage.Format.Format_ARGB32)
+    img.fill(Qt.GlobalColor.transparent)
+    p = QPainter(img)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(color), 1.6 * scale)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    w = px * 0.30
+    h = px * 0.16
+    cx, cy = px / 2, px / 2
+    if direction == "down":
+        pts = [QPointF(cx - w, cy - h), QPointF(cx, cy + h), QPointF(cx + w, cy - h)]
+    elif direction == "up":
+        pts = [QPointF(cx - w, cy + h), QPointF(cx, cy - h), QPointF(cx + w, cy + h)]
+    else:  # right
+        pts = [QPointF(cx - h, cy - w), QPointF(cx + h, cy), QPointF(cx - h, cy + w)]
+    p.drawPolyline(pts)
+    p.end()
+    img.setDevicePixelRatio(scale)
+    img.save(str(path))
+
+
+def indicator_images(t: dict) -> dict[str, str]:
+    """Write chevron images for the current tokens into the temp folder; returns stylesheet url() paths."""
+    base = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.TempLocation)) / "cirplas-theme"
+    out: dict[str, str] = {}
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        for key, color in (("normal", t["text_muted"]), ("disabled", t["text_disabled"])):
+            for direction in ("down", "up", "right"):
+                name = f"chevron_{direction}_{color.lstrip('#').lower()}"
+                for scale in (1, 2):
+                    path = base / (name + ("@2x" if scale == 2 else "") + ".png")
+                    if not path.exists():
+                        _chevron_png(path, color, direction, 10, scale)
+                out[f"{direction}_{key}"] = (base / (name + ".png")).as_posix()
+    except Exception:  # noqa: BLE001  (read-only temp: fall back to the style's own arrows)
+        return {}
+    return out
+
+
 # ---------------------------------------------------------------------- palette / stylesheet
 def build_palette(t: dict) -> QPalette:
     p = QPalette()
@@ -182,6 +228,22 @@ def build_palette(t: dict) -> QPalette:
 
 
 def build_qss(t: dict) -> str:
+    img = indicator_images(t)
+
+    def arrow(sub: str, direction: str, size: int) -> str:
+        if f"{direction}_normal" not in img:
+            return ""
+        return (f'{sub} {{ image: url("{img[f"{direction}_normal"]}"); width: {size}px; height: {size}px; }}\n'
+                f'{sub}:disabled {{ image: url("{img[f"{direction}_disabled"]}"); }}\n')
+
+    arrows = (arrow("QComboBox::down-arrow", "down", 10) + arrow("QSpinBox::up-arrow, QDoubleSpinBox::up-arrow", "up", 8)
+              + arrow("QSpinBox::down-arrow, QDoubleSpinBox::down-arrow", "down", 8) + arrow("QMenu::right-arrow", "right", 10)
+              + arrow("QToolButton::menu-indicator", "down", 8))
+    spin = ("QSpinBox::up-button, QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 16px; border: none; background: transparent; }\n"
+            "QSpinBox::down-button, QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 16px; border: none; background: transparent; }\n"
+            if img else "")
+    dropdown = ("QComboBox::drop-down { border: none; width: 22px; subcontrol-origin: padding; subcontrol-position: center right; }\n"
+                if img else "")
     return f"""
 QWidget {{ color: {t['text']}; }}
 QMainWindow, QDialog, QMessageBox, QFileDialog {{ background: {t['bg']}; }}
@@ -203,7 +265,7 @@ QMenu::item:disabled {{ color: {t['text_disabled']}; }}
 QMenu::separator {{ height: 1px; background: {t['border']}; margin: 4px 8px; }}
 QMenu::indicator {{ width: 14px; height: 14px; }}
 
-QDockWidget {{ color: {t['text_muted']}; font-weight: 600; titlebar-close-icon: none; titlebar-normal-icon: none; }}
+QDockWidget {{ color: {t['text_muted']}; font-weight: 600; }}
 QDockWidget::title {{ background: {t['surface']}; padding: 7px 12px; border-bottom: 1px solid {t['border']}; text-align: left; }}
 QDockWidget::close-button, QDockWidget::float-button {{ border: none; background: transparent; }}
 QDockWidget > QWidget {{ background: {t['surface']}; }}
@@ -233,11 +295,9 @@ QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabl
 QLineEdit[invalid="true"] {{ border: 1px solid {t['error']}; }}
 QPlainTextEdit[mono="true"], QTextEdit[mono="true"] {{ font-family: {MONO_FONTS}; font-size: 11px; }}
 QPlainTextEdit[flat="true"] {{ background: {t['bg']}; }}
-QComboBox::drop-down {{ border: none; width: 22px; subcontrol-origin: padding; subcontrol-position: center right; }}
-QComboBox QAbstractItemView {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 6px; padding: 4px;
+{dropdown}QComboBox QAbstractItemView {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 6px; padding: 4px;
     selection-background-color: {t['surface_2']}; selection-color: {t['text']}; outline: 0; }}
-QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ border: none; width: 16px; background: transparent; }}
-
+{spin}{arrows}
 QPushButton {{ background: {t['surface']}; border: 1px solid {t['border']}; border-radius: 6px; padding: 5px 14px; min-height: 18px; }}
 QPushButton:hover {{ background: {t['surface_2']}; }}
 QPushButton:pressed {{ border-color: {t['accent']}; }}
@@ -246,8 +306,8 @@ QPushButton:focus {{ border: 1px solid {t['focus']}; }}
 QPushButton[primary="true"] {{ background: {t['accent_strong']}; color: {t['accent_fg']}; border: 1px solid {t['accent_strong']}; font-weight: 600; }}
 QPushButton[primary="true"]:hover {{ background: {t['accent_hover']}; border-color: {t['accent_hover']}; }}
 QPushButton[primary="true"]:disabled {{ background: {t['surface_2']}; color: {t['text_disabled']}; border-color: {t['border']}; }}
-QPushButton::menu-indicator {{ subcontrol-position: right center; subcontrol-origin: padding; left: -6px; }}
 QToolButton {{ background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 4px 8px; }}
+QToolButton::menu-indicator {{ subcontrol-origin: padding; subcontrol-position: center right; right: 4px; }}
 QToolButton:hover {{ background: {t['surface_2']}; border-color: {t['border']}; }}
 QToolButton:checked {{ background: {t['surface_2']}; border-color: {t['accent']}; }}
 
