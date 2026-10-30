@@ -43,9 +43,9 @@ jobs:
           python-version: "3.12"
       - uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW64
-          update: false
-          install: mingw-w64-x86_64-ngspice
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-ngspice
       - name: Collect ngspice shared library and runtime DLLs
         shell: msys2 {0}
         run: bash packaging/fetch_ngspice_msys2.sh packaging/ngspice

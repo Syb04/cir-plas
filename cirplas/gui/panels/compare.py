@@ -57,8 +57,8 @@ class ComparePanel(QWidget):
         self.data[path] = ResultData(path)
         item = QListWidgetItem(label or Path(path).parent.name)
         item.setData(Qt.ItemDataRole.UserRole, path)
-        item.setSelected(True)
         self.list.addItem(item)
+        item.setSelected(True)
         self.redraw()
 
     def _add_files(self) -> None:

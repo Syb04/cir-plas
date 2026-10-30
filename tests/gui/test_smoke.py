@@ -23,7 +23,7 @@ def window(qtbot):
 
 def test_main_window_builds(window):
     assert window.params.count() == 4
-    assert window.tabs.count() == 3
+    assert window.tabs.count() == 5
     assert window.model.is_valid
 
 
