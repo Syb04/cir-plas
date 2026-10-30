@@ -71,6 +71,7 @@ class NetlistIndex:
     sheath_instances_t: list[str]
     node_generator: dict[str, str] = field(default_factory=dict)  # port -> generator (open-circuit) node when an L match is used
     node_match_in: dict[str, str] = field(default_factory=dict)  # port -> node between r_gen and the matching network
+    node_chain: dict[str, str] = field(default_factory=dict)  # port -> first node of the port chain (after the source / match)
 
 
 # Nonlinear sheath capacitor. u = softplus(V) = (V + sqrt(V^2 + eps^2))/2  (>= 0, -> V for V >> eps, -> 0 for V << -eps)
@@ -422,6 +423,7 @@ class NetlistBuilder:
             L.append(self._source_line(port, src_node, ps))
             idx.i_source[port] = nm.vec_branch(f"Bsrc_{port}" if self.mode == "tran" else f"Vsrc_{port}")
             idx.node_source[port] = src_node
+        idx.node_chain[port] = src_node
         cur = src_node
         if ps.l_feed > 0:
             L.append(f"Lfeed_{port} {cur} n{port}l {fmt(ps.l_feed)}")

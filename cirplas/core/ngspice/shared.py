@@ -203,7 +203,12 @@ class NgspiceShared:
         return 0
 
     def _on_bg(self, not_running: bool, ident: int, user: c_void_p) -> int:
+        # called from the background thread when the simulation thread starts (not_running=False) and ends (True)
         self._bg_running = not not_running
+        if not not_running:
+            self._bg_started = True
+        elif self._bg_started:
+            self._bg_finished = True
         return 0
 
     # ------------------------------------------------------------------ commands
@@ -224,7 +229,7 @@ class NgspiceShared:
         if rc != 0 or self._errors:
             raise NgspiceError("circuit load failed:\n" + "\n".join(self._errors or self._messages[-10:]))
 
-    def run(self, netlist: str, cancel: Optional[Callable[[], bool]] = None, poll_s: float = 0.02, timeout_s: Optional[float] = None) -> RawResult:
+    def run(self, netlist: str, cancel: Optional[Callable[[], bool]] = None, poll_s: float = 0.005, timeout_s: Optional[float] = None) -> RawResult:
         """Load and simulate a netlist (bg_run), then collect all vectors of the current plot."""
         with self._lock:
             self.command("destroy all")
@@ -237,12 +242,19 @@ class NgspiceShared:
             self._errors.clear()
             t0 = time.time()
             self._bg_running = True
+            self._bg_started = False
+            self._bg_finished = False
             self.command("bg_run")
             halted = False
             while True:
-                time.sleep(poll_s)
-                if not self.lib.ngSpice_running():
+                # the background thread signals start and end through the BGThreadRunning callback; polling
+                # ngSpice_running() alone can miss a very short run that finishes before the first poll
+                if self._bg_finished:
                     break
+                if self._bg_started and not self.lib.ngSpice_running():
+                    break
+                if not self._bg_started and time.time() - t0 > 5.0 and not self.lib.ngSpice_running():
+                    break  # the thread never reported in (e.g. the run failed to start)
                 if cancel is not None and cancel():
                     self.command("bg_halt")
                     halted = True
@@ -251,9 +263,10 @@ class NgspiceShared:
                     self.command("bg_halt")
                     self._errors.append(f"timeout after {timeout_s} s")
                     break
+                time.sleep(poll_s)
             # wait for the background thread to settle
             for _ in range(500):
-                if not self.lib.ngSpice_running():
+                if self._bg_finished or not self.lib.ngSpice_running():
                     break
                 time.sleep(poll_s)
             runtime = time.time() - t0

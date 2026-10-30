@@ -39,8 +39,9 @@ class AcPortResult:
     port: str
     v: complex
     i: complex
-    z: complex
+    z: complex  # impedance at the port node (V_port / I_port)
     p: float
+    z_chain: complex = complex("nan")  # impedance seen at the start of the port chain (feed L, blocking C, port): used for matching
 
 
 @dataclass
@@ -117,7 +118,9 @@ def extract_ac(res: RawResult, idx: NetlistIndex, model: CircuitModel, frequency
         vp = V(port)
         ip = I(idx.i_port[port])
         z = vp / ip if abs(ip) > 0 else complex("nan")
-        ports.append(AcPortResult(port=port, v=vp, i=ip, z=z, p=0.5 * (vp * np.conj(ip)).real))
+        v_chain = V(idx.node_chain[port]) if port in idx.node_chain else vp
+        z_chain = v_chain / ip if abs(ip) > 0 else complex("nan")
+        ports.append(AcPortResult(port=port, v=vp, i=ip, z=z, p=0.5 * (vp * np.conj(ip)).real, z_chain=z_chain))
     gap = float(np.mean([c.l_gap for c in model.mesh.cells]))
     l_p = float(np.mean([c.l_p for c in model.mesh.cells]))
     s_tot = float(np.mean([c.s_b + c.s_t for c in model.mesh.cells]))
@@ -156,9 +159,9 @@ def tune_matching(ctx: RunContext, frequency: float, est: Estimates | None = Non
     for pr in ac.ports:
         if pr.port in ports:
             gen = ctx.project.circuit.ports[pr.port].generator
-            m = design_l_match(pr.z, frequency, gen.r_gen, gen.topology)
-            out[pr.port] = {"l": m.l, "c": m.c, "topology": m.topology, "z_load": pr.z}
-            ctx.log(f"port {pr.port}: L-match {m.topology} L={m.l*1e9:.1f} nH C={m.c*1e12:.1f} pF for Z_load={pr.z:.2f} ohm")
+            m = design_l_match(pr.z_chain, frequency, gen.r_gen, gen.topology)
+            out[pr.port] = {"l": m.l, "c": m.c, "topology": m.topology, "z_load": pr.z_chain}
+            ctx.log(f"port {pr.port}: L-match {m.topology} L={m.l*1e9:.1f} nH C={m.c*1e12:.1f} pF for Z_load={pr.z_chain:.2f} ohm")
     return out
 
 
@@ -187,13 +190,13 @@ def run_ac(ctx: RunContext, frequency: float | None = None, est: Estimates | Non
                     z_in = trial.matching[pr.port].get("z_in", complex("nan"))
                     if not (abs(z_in - gen.r_gen) <= 0.03 * gen.r_gen):
                         done = False
-                        m = design_l_match(pr.z, frequency, gen.r_gen, gen.topology)
+                        m = design_l_match(pr.z_chain, frequency, gen.r_gen, gen.topology)
                         old = matching[pr.port]
                         # relaxed update in log space (the plasma load moves with the drive level)
                         a = 0.5
                         l_new = _m.exp((1 - a) * _m.log(old["l"]) + a * _m.log(m.l)) if old["topology"] == m.topology else m.l
                         c_new = _m.exp((1 - a) * _m.log(old["c"]) + a * _m.log(m.c)) if old["topology"] == m.topology else m.c
-                        matching[pr.port] = {"l": l_new, "c": c_new, "topology": m.topology, "z_load": pr.z}
+                        matching[pr.port] = {"l": l_new, "c": c_new, "topology": m.topology, "z_load": pr.z_chain}
             ctx.progress({"stage": "match", "iteration": k, "z_in": {q: f"{trial.matching[q].get('z_in', complex('nan')):.2f}" for q in matching}})
             if done:
                 break

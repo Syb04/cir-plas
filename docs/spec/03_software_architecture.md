@@ -242,6 +242,8 @@ cirplas/
   `dist/CirPlas/` に生成し、Inno Setup（`installer.iss`、日本語既定）でインストーラを作ります。ngspice は **MSYS2 の `mingw-w64-x86_64-ngspice`**
   パッケージから `libngspice-0.dll` と依存ランタイム DLL を取得して同梱します（`fetch_ngspice_msys2.sh`）。GitHub Actions の `windows-package`
   ジョブがこれを自動実行し、インストーラとバンドルを成果物として保存します。凍結バンドルでは GUI が隣接する `cirplas-solve.exe` を起動します。
+  2026-10-30 に GitHub Actions 上でインストーラ生成まで成功しました（成果物 `CirPlas-windows`、約 220 MB、MSYS2 UCRT64 の ngspice 42 同梱）。
+  Windows 実機での起動・解析の確認は未了です。
 - UI 既定言語（決定）：日本語（英語に切替可）。
 - 本ツールのライセンス（決定：OSS）：**Apache-2.0 を提案**します（特許条項を含み企業由来の OSS で一般的。MIT/BSD-3 でも可）。
   リポジトリに `LICENSE`、`NOTICE`、`THIRD_PARTY_NOTICES.md` を置きます。
