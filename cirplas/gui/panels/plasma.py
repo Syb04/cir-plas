@@ -6,7 +6,6 @@ import math
 
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
-from ...core.constants import C_LIGHT
 from ..project_model import ProjectModel
 from ..widgets.paramform import BoundForm, group
 
@@ -50,7 +49,7 @@ class PlasmaPanel(QWidget):
     def _derived(self) -> str:
         try:
             from ...core.mesh import build_radial_mesh
-            from ...core.plasma import compute_plasma_state, skin_depth
+            from ...core.plasma import compute_plasma_state
 
             p = self.model.project()
             mesh = build_radial_mesh(p.geometry, p.numerics.mesh)

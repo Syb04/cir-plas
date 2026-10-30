@@ -8,9 +8,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QListWidget, QVBoxLayout, QWidget
 
 from ...core.post.signals import harmonics, resample, uniform_grid
+from .. import theme
 from ..results_io import ResultData
-
-COLORS = ["#1565c0", "#ef6c00", "#2e7d32", "#6a1b9a", "#c62828", "#00838f", "#4e342e", "#37474f", "#827717", "#ad1457"]
 
 
 class MapView(QWidget):
@@ -32,7 +31,7 @@ class MapView(QWidget):
         top.addWidget(self.quantity)
         top.addWidget(self.info, 1)
         lay.addLayout(top)
-        self.plot = pg.PlotWidget()
+        self.plot = theme.make_plot()
         self.plot.setLabel("bottom", "r [mm]")
         self.plot.setLabel("left", "z [mm]（ウェハ電極面基準）")
         self.plot.setAspectLocked(False)
@@ -94,11 +93,11 @@ class EdgeView(QWidget):
         lay = QVBoxLayout(self)
         self.info = QLabel("")
         lay.addWidget(self.info)
-        self.p1 = pg.PlotWidget(title="シース境界（下部）と傾き")
+        self.p1 = theme.make_plot(title="シース境界（下部）と傾き")
         self.p1.setLabel("bottom", "r [mm]")
         self.p1.setLabel("left", "z [mm]")
         self.p1.addLegend()
-        self.p2 = pg.PlotWidget(title="下部シース電圧（DC・RF 振幅）")
+        self.p2 = theme.make_plot(title="下部シース電圧（DC・RF 振幅）")
         self.p2.setLabel("bottom", "r [mm]")
         self.p2.setLabel("left", "V")
         self.p2.addLegend()
@@ -125,14 +124,14 @@ class EdgeView(QWidget):
         z_s = z_surf + s
         r_w = np.asarray(mesh["r_edges"])[np.argmax(np.diff(np.asarray(mesh["region_index"])) != 0) + 1] * 1e3 if len(mesh["region_index"]) > 1 else r[-1]
         sel = (r > r_w - 40) & (r < r_w + 40)
-        self.p1.plot(r[sel], z_surf[sel], pen=pg.mkPen("#9e9e9e", width=2), name="表面")
-        self.p1.plot(r[sel], z_s[sel], pen=pg.mkPen("#1565c0", width=2), symbol="o", symbolSize=5, name="シース境界（平均厚）")
+        self.p1.plot(r[sel], z_surf[sel], pen=pg.mkPen(theme.tokens()["text_muted"], width=2), name="表面")
+        self.p1.plot(r[sel], z_s[sel], pen=theme.series_pen(1), symbol="o", symbolSize=5, symbolBrush=theme.series(1), name="シース境界（平均厚）")
         theta = np.degrees(np.arctan(np.gradient(z_s, r)))
-        self.p1.addItem(pg.InfiniteLine(pos=r_w, angle=90, pen=pg.mkPen("#9e9e9e", style=Qt.PenStyle.DashLine)))
+        self.p1.addItem(pg.InfiniteLine(pos=r_w, angle=90, pen=pg.mkPen(theme.tokens()["text_muted"], style=Qt.PenStyle.DashLine)))
         if v_dc is not None:
-            self.p2.plot(r[sel], v_dc[sel], pen=pg.mkPen("#2e7d32", width=2), symbol="o", symbolSize=5, name="DC")
-        self.p2.plot(r[sel], v_1[sel], pen=pg.mkPen("#ef6c00", width=2), symbol="s", symbolSize=5, name="RF 振幅")
-        self.p2.addItem(pg.InfiniteLine(pos=r_w, angle=90, pen=pg.mkPen("#9e9e9e", style=Qt.PenStyle.DashLine)))
+            self.p2.plot(r[sel], v_dc[sel], pen=theme.series_pen(2), symbol="o", symbolSize=5, symbolBrush=theme.series(2), name="DC")
+        self.p2.plot(r[sel], v_1[sel], pen=theme.series_pen(0), symbol="s", symbolSize=5, symbolBrush=theme.series(0), name="RF 振幅")
+        self.p2.addItem(pg.InfiniteLine(pos=r_w, angle=90, pen=pg.mkPen(theme.tokens()["text_muted"], style=Qt.PenStyle.DashLine)))
         near = sel & (r < r_w)
         self.info.setText(f"ウェハ端 r = {r_w:.1f} mm   エッジ 10 mm 内の最大傾き |θ| = {np.max(np.abs(theta[(r > r_w - 10) & (r < r_w)])) if np.any((r > r_w - 10) & (r < r_w)) else float('nan'):.2f}°   "
                           f"シース厚: 中心 {s[0]:.2f} mm / エッジ {s[near][-1] if near.any() else float('nan'):.2f} mm")
@@ -157,7 +156,7 @@ class SpectrumView(QWidget):
         ll.addWidget(self.log)
         ll.addWidget(self.list, 1)
         left.setMaximumWidth(260)
-        self.plot = pg.PlotWidget(title="高調波スペクトル（基本周期基準）")
+        self.plot = theme.make_plot(title="高調波スペクトル（基本周期基準）")
         self.plot.setLabel("bottom", "高調波次数（0 = DC）")
         self.plot.addLegend()
         lay.addWidget(left)
@@ -200,8 +199,8 @@ class SpectrumView(QWidget):
             vals = np.log10(np.maximum(amps, 1e-3)) + 3.0 if use_log else amps  # log scale floored at 1 mV, offset so bars are positive
             x = np.arange(len(amps)) + (k - 0.5 * (len(items) - 1)) * width
             edges = np.concatenate([x - width / 2, [x[-1] + width / 2]])
-            self.plot.plot(edges, vals, stepMode="center", fillLevel=0, brush=pg.mkBrush(COLORS[k % len(COLORS)] + "a0"),
-                           pen=pg.mkPen(COLORS[k % len(COLORS)]), name=item.text())
+            self.plot.plot(edges, vals, stepMode="center", fillLevel=0, brush=pg.mkBrush(theme.series(k) + "a0"),
+                           pen=pg.mkPen(theme.series(k)), name=item.text())
         if use_log:
             ax = self.plot.getAxis("left")
             ax.setTicks([[(v, f"{10**(v-3):g}") for v in range(0, 7)]])
@@ -214,11 +213,11 @@ class DensityView(QWidget):
         super().__init__(parent)
         lay = QVBoxLayout(self)
         self.info = QLabel("")
-        self.p1 = pg.PlotWidget(title="電子密度の反復履歴")
+        self.p1 = theme.make_plot(title="電子密度の反復履歴")
         self.p1.setLabel("bottom", "r [mm]")
         self.p1.setLabel("left", "n [m⁻³]")
         self.p1.addLegend()
-        self.p2 = pg.PlotWidget(title="残差（相対変化の最大値）")
+        self.p2 = theme.make_plot(title="残差（相対変化の最大値）")
         self.p2.setLabel("bottom", "反復")
         self.p2.setLogMode(y=True)
         lay.addWidget(self.info)
@@ -236,10 +235,10 @@ class DensityView(QWidget):
         n_hist = np.asarray(it["n"])
         for k in range(n_hist.shape[0]):
             last = k == n_hist.shape[0] - 1
-            pen = pg.mkPen("#c62828" if last else (120, 120, 120, 90), width=3 if last else 1)
+            pen = pg.mkPen(theme.tokens()["accent"] if last else theme.tokens()["text_disabled"], width=3 if last else 1)
             self.p1.plot(r, n_hist[k], pen=pen, name=("最終" if last else ("初期" if k == 0 else None)))
         res = np.asarray(it["residual"])
-        self.p2.plot(np.arange(1, len(res) + 1), np.maximum(res, 1e-9), pen=pg.mkPen("#1565c0", width=2), symbol="o")
+        self.p2.plot(np.arange(1, len(res) + 1), np.maximum(res, 1e-9), pen=theme.series_pen(1), symbol="o", symbolBrush=theme.series(1))
         a = it["attrs"]
         te = np.asarray(it["te"])
         self.info.setText(f"反復 {int(a.get('iterations', 0))} 回, {'収束' if bool(a.get('converged', False)) else '未収束'},  Te = {te[-1] if len(te) else float('nan'):.3f} eV,  D_a = {float(a.get('d_a', 0)):.3f} m²/s")

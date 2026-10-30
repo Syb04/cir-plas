@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Callable, Optional, Sequence
+from typing import Callable, Sequence
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QLabel, QLineEdit, QSpinBox,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import QCheckBox, QComboBox, QFormLayout, QGroupBox, QLabel, QLineEdit, QSpinBox, QVBoxLayout, QWidget
 
 from ..project_model import ProjectModel
 
@@ -65,13 +64,44 @@ class BoundForm(QWidget):
                 return
             try:
                 self.model.set(path, w.value() / scale)
-                w.setStyleSheet("")
+                _mark_invalid(w, False)
             except ValueError:
-                w.setStyleSheet("border: 1px solid #c62828;")
+                _mark_invalid(w, True)
 
         def update():
             v = self.model.get(path)
             if v is not None:
+                w.set_value(float(v) * scale)
+
+        w.editingFinished.connect(commit)
+        self._updaters.append(update)
+        self.form.addRow(f"{label}{' [' + unit + ']' if unit else ''}", w)
+        update()
+        return w
+
+    def add_optional_float(self, label: str, path: str, unit: str = "", scale: float = 1.0, tooltip: str = "",
+                           placeholder: str = "（なし）") -> SciSpin:
+        """Like add_float, but an empty field stores ``None``."""
+        w = SciSpin()
+        w.setPlaceholderText(placeholder)
+        if tooltip:
+            w.setToolTip(tooltip)
+
+        def commit():
+            if self._blocked:
+                return
+            text = w.text().strip()
+            try:
+                self.model.set(path, None if text == "" else SciSpin.parse(text) / scale)
+                _mark_invalid(w, False)
+            except ValueError:
+                _mark_invalid(w, True)
+
+        def update():
+            v = self.model.get(path)
+            if v is None:
+                w.setText("")
+            else:
                 w.set_value(float(v) * scale)
 
         w.editingFinished.connect(commit)
@@ -152,6 +182,19 @@ class BoundForm(QWidget):
                     pass
         finally:
             self._blocked = False
+
+    def detach(self) -> None:
+        """Stop following the model (call before discarding a dynamically created form)."""
+        try:
+            self.model.changed.disconnect(self.refresh)
+        except (RuntimeError, TypeError):
+            pass
+
+
+def _mark_invalid(widget: QWidget, invalid: bool) -> None:
+    widget.setProperty("invalid", "true" if invalid else "false")
+    widget.style().unpolish(widget)
+    widget.style().polish(widget)
 
 
 def group(title: str, widget: QWidget) -> QGroupBox:

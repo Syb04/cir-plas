@@ -218,7 +218,6 @@ class GeometryPanel(QWidget):
         regions = list(self.model.get("geometry.regions", []))
         r_last = regions[-1]["r_out"] if regions else 0.1
         regions.append({"name": f"region{len(regions)+1}", "r_out": r_last + 0.02, "conductor": "G", "stack": [], "z_offset": 0.0})
-        data = dict(self.model.data)
         self.model.set("geometry.regions", regions)
         n_r = dict(self.model.get("numerics.mesh.n_r", {}))
         n_r[regions[-1]["name"]] = 4

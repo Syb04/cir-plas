@@ -74,6 +74,10 @@ class CircuitPanel(QWidget):
         super().__init__(parent)
         self.model = model
         lay = QVBoxLayout(self)
+        hint = QLabel("中央の「回路図」タブでは、外部回路を図の上で編集（要素の追加・削除・値の変更）できます。ここでは同じ値を表で編集します。")
+        hint.setProperty("role", "muted")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
         self.sources = SourcesTable(model, "W")
         btns = QHBoxLayout()
         b_add = QPushButton("電源を追加")
@@ -112,11 +116,14 @@ class CircuitPanel(QWidget):
         fr.add_float("DC バイアス", "circuit.fr.tuning.v_dc", "V")
         lay.addWidget(group("フォーカスリング", fr))
         self.extra = QPlainTextEdit()
+        self.extra.setProperty("mono", "true")
         self.extra.setPlaceholderText("* 追加ネットリスト（ノード W, F, T, 0 と u_ で始まる新規ノードが使えます）")
         self.extra.setPlainText(model.get("circuit.extra_netlist", ""))
         self.extra.textChanged.connect(self._extra_changed)
+        model.changed.connect(self._refresh_extra)
         self.lint = QLabel("")
-        self.lint.setStyleSheet("color: #c62828;")
+        self.lint.setProperty("role", "error")
+        self.lint.setWordWrap(True)
         ebox = QWidget()
         el = QVBoxLayout(ebox)
         el.setContentsMargins(0, 0, 0, 0)
@@ -131,3 +138,12 @@ class CircuitPanel(QWidget):
         self.lint.setText("\n".join(problems))
         if not problems:
             self.model.set("circuit.extra_netlist", text)
+
+    def _refresh_extra(self) -> None:
+        """Follow edits made elsewhere (schematic editor, undo) without disturbing typing."""
+        text = self.model.get("circuit.extra_netlist", "") or ""
+        if text != self.extra.toPlainText() and not self.extra.hasFocus():
+            self.extra.blockSignals(True)
+            self.extra.setPlainText(text)
+            self.extra.blockSignals(False)
+            self.lint.setText("")

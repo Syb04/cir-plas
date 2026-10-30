@@ -1,25 +1,29 @@
-"""Main window: dock layout with parameter panels, central tabs, run panel."""
+"""Main window: full-height settings pane (left), central tabs, run pane (right)."""
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtWidgets import (QDockWidget, QFileDialog, QMainWindow, QMessageBox, QPlainTextEdit, QScrollArea, QTabWidget, QWidget, QVBoxLayout, QLabel, QHBoxLayout, QComboBox, QPushButton)
+from PySide6.QtCore import QSettings, Qt
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence
+from PySide6.QtWidgets import (QComboBox, QDockWidget, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPlainTextEdit,
+                               QPushButton, QScrollArea, QTabWidget, QVBoxLayout, QWidget)
 
 from .. import __version__
 from ..core.project import default_project
+from . import theme
 from .panels.circuit import CircuitPanel
 from .panels.compare import ComparePanel
-from .panels.sweep import SweepPanel
 from .panels.geometry import GeometryPanel
 from .panels.numerics import NumericsPanel
 from .panels.plasma import PlasmaPanel
 from .panels.results import ResultsPanel
 from .panels.run import RunPanel
+from .panels.sweep import SweepPanel
 from .project_model import ProjectModel
 from .widgets.crosssection import CrossSectionView
+from .widgets.schematic import CircuitEditor
+
+STATE_KEY = "ui/mainwindow_state_v2"
+GEOMETRY_KEY = "ui/mainwindow_geometry_v2"
 
 
 def _scroll(w: QWidget) -> QScrollArea:
@@ -41,6 +45,7 @@ class NetlistPreview(QWidget):
         btn = QPushButton("再生成")
         btn.clicked.connect(self.regenerate)
         self.info = QLabel("")
+        self.info.setProperty("role", "muted")
         top.addWidget(QLabel("モード"))
         top.addWidget(self.mode)
         top.addWidget(btn)
@@ -49,7 +54,7 @@ class NetlistPreview(QWidget):
         self.text = QPlainTextEdit()
         self.text.setReadOnly(True)
         self.text.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self.text.setStyleSheet("font-family: Consolas, 'DejaVu Sans Mono', monospace; font-size: 11px;")
+        self.text.setProperty("mono", "true")
         lay.addWidget(self.text, 1)
 
     def regenerate(self) -> None:
@@ -74,51 +79,73 @@ class NetlistPreview(QWidget):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, model: ProjectModel | None = None):
+    def __init__(self, model: ProjectModel | None = None, restore_state: bool = True):
         super().__init__()
-        import pyqtgraph as pg
-
-        pg.setConfigOptions(background="w", foreground="k", antialias=True)
         self.model = model or ProjectModel(default_project())
         self.setWindowTitle(f"CirPlas {__version__}")
-        self.resize(1500, 950)
+        self.resize(1680, 980)
+        # side docks take the full height; nothing is docked at the top/bottom
+        self.setCorner(Qt.Corner.TopLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
+        self.setCorner(Qt.Corner.BottomLeftCorner, Qt.DockWidgetArea.LeftDockWidgetArea)
+        self.setCorner(Qt.Corner.TopRightCorner, Qt.DockWidgetArea.RightDockWidgetArea)
+        self.setCorner(Qt.Corner.BottomRightCorner, Qt.DockWidgetArea.RightDockWidgetArea)
+        self.setDockOptions(QMainWindow.DockOption.AnimatedDocks | QMainWindow.DockOption.AllowNestedDocks)
         # central tabs
         self.cross = CrossSectionView()
+        self.schematic = CircuitEditor(self.model)
         self.netlist = NetlistPreview(self.model)
         self.results = ResultsPanel()
-        self.tabs = QTabWidget()
-        self.tabs.addTab(self.cross, "断面図")
-        self.tabs.addTab(self.netlist, "ネットリスト")
-        self.tabs.addTab(self.results, "結果")
         self.sweep = SweepPanel(self.model)
         self.compare = ComparePanel()
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.setProperty("flat", "true")
+        self.tabs.addTab(self.cross, "断面図")
+        self.tabs.addTab(self.schematic, "回路図")
+        self.tabs.addTab(self.netlist, "ネットリスト")
+        self.tabs.addTab(self.results, "結果")
         self.tabs.addTab(self.sweep, "スイープ")
         self.tabs.addTab(self.compare, "比較")
         self.sweep.open_result.connect(self._show_results)
-        self.setCentralWidget(self.tabs)
-        # left dock: parameter panels
+        central = QWidget()
+        cl = QVBoxLayout(central)
+        cl.setContentsMargins(8, 6, 8, 8)
+        cl.addWidget(self.tabs)
+        self.setCentralWidget(central)
+        # left dock: parameter panels, full height
         self.params = QTabWidget()
+        self.params.setDocumentMode(True)
+        self.params.setProperty("flat", "true")
         self.params.addTab(_scroll(GeometryPanel(self.model)), "幾何")
         self.params.addTab(_scroll(PlasmaPanel(self.model)), "プラズマ")
         self.params.addTab(_scroll(CircuitPanel(self.model)), "回路")
         self.params.addTab(_scroll(NumericsPanel(self.model)), "数値設定")
-        dock = QDockWidget("設定", self)
-        dock.setWidget(self.params)
-        dock.setMinimumWidth(500)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock)
-        # bottom dock: run
+        self.dock_settings = QDockWidget("設定", self)
+        self.dock_settings.setObjectName("dock_settings")
+        self.dock_settings.setWidget(self.params)
+        self.dock_settings.setMinimumWidth(480)
+        self.dock_settings.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable | QDockWidget.DockWidgetFeature.DockWidgetFloatable)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.dock_settings)
+        # right dock: run pane
         self.run_panel = RunPanel(self.model)
-        rdock = QDockWidget("実行", self)
-        rdock.setWidget(self.run_panel)
-        rdock.setMinimumHeight(220)
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, rdock)
+        self.dock_run = QDockWidget("実行", self)
+        self.dock_run.setObjectName("dock_run")
+        self.dock_run.setWidget(self.run_panel)
+        self.dock_run.setMinimumWidth(340)
+        self.dock_run.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetMovable | QDockWidget.DockWidgetFeature.DockWidgetFloatable)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.dock_run)
+        self.resizeDocks([self.dock_settings, self.dock_run], [520, 380], Qt.Orientation.Horizontal)
         self.run_panel.results_ready.connect(self._show_results)
         self._menus()
         self.model.changed.connect(self._on_model_changed)
         self.model.validity_changed.connect(self._on_validity)
         self.model.path_changed.connect(lambda p: self._update_title())
+        theme.manager().changed.connect(self._on_theme_changed)
         self._on_model_changed()
         self._update_title()
+        self._persist_state = restore_state
+        if restore_state:
+            self._restore_state()
 
     # ------------------------------------------------------------------ menus
     def _menus(self) -> None:
@@ -148,6 +175,24 @@ class MainWindow(QMainWindow):
         a.setShortcut(QKeySequence.StandardKey.Redo)
         a.triggered.connect(self.model.redo)
         m_edit.addAction(a)
+        m_view = mb.addMenu("表示(&V)")
+        m_theme = m_view.addMenu("テーマ")
+        self.theme_actions = QActionGroup(self)
+        self.theme_actions.setExclusive(True)
+        for mode, text in (("system", "OS 設定に従う"), ("light", "ライト"), ("dark", "ダーク")):
+            a = QAction(text, self)
+            a.setCheckable(True)
+            a.setData(mode)
+            a.setChecked(theme.manager().mode == mode)
+            a.triggered.connect(lambda _c, m=mode: theme.manager().set_mode(m))
+            self.theme_actions.addAction(a)
+            m_theme.addAction(a)
+        m_view.addSeparator()
+        m_view.addAction(self.dock_settings.toggleViewAction())
+        m_view.addAction(self.dock_run.toggleViewAction())
+        a = QAction("レイアウトを初期化", self)
+        a.triggered.connect(self.reset_layout)
+        m_view.addAction(a)
         m_run = mb.addMenu("実行(&R)")
         a = QAction("実行 (選択モード)", self)
         a.setShortcut(QKeySequence(Qt.Key.Key_F5))
@@ -171,7 +216,45 @@ class MainWindow(QMainWindow):
         a.triggered.connect(lambda: QMessageBox.about(self, "CirPlas", f"CirPlas {__version__}\nCCP 装置向けプラズマ回路シミュレータ（ngspice バックエンド）"))
         m_help.addAction(a)
 
+    # ------------------------------------------------------------------ window state
+    def _restore_state(self) -> None:
+        s = QSettings()
+        geo = s.value(GEOMETRY_KEY)
+        state = s.value(STATE_KEY)
+        try:
+            if geo is not None:
+                self.restoreGeometry(geo)
+            if state is not None:
+                self.restoreState(state)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def closeEvent(self, event) -> None:
+        if self._persist_state:
+            s = QSettings()
+            s.setValue(GEOMETRY_KEY, self.saveGeometry())
+            s.setValue(STATE_KEY, self.saveState())
+        super().closeEvent(event)
+
+    def reset_layout(self) -> None:
+        for dock, area in ((self.dock_settings, Qt.DockWidgetArea.LeftDockWidgetArea), (self.dock_run, Qt.DockWidgetArea.RightDockWidgetArea)):
+            dock.setFloating(False)
+            dock.show()
+            self.addDockWidget(area, dock)
+        self.resizeDocks([self.dock_settings, self.dock_run], [520, 380], Qt.Orientation.Horizontal)
+
     # ------------------------------------------------------------------ slots
+    def _on_theme_changed(self, mode: str) -> None:
+        for a in self.theme_actions.actions():
+            a.setChecked(a.data() == theme.manager().mode)
+        self.cross.redraw()
+        for panel in (self.results.radial, self.results.wave, self.results.map, self.results.spectrum, self.compare, self.sweep):
+            try:
+                panel.redraw()
+            except Exception:  # noqa: BLE001
+                pass
+        self.run_panel.restyle()
+
     def _on_model_changed(self) -> None:
         try:
             p = self.model.project()

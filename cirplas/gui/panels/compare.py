@@ -5,12 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-import pyqtgraph as pg
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget
 
+from .. import theme
 from ..results_io import ResultData
-from .results import COLORS, RADIAL_QUANTITIES
+from .results import RADIAL_QUANTITIES
 
 
 class ComparePanel(QWidget):
@@ -43,7 +43,7 @@ class ComparePanel(QWidget):
         ll.addWidget(self.quantity)
         ll.addWidget(self.normalize)
         left.setMaximumWidth(360)
-        self.plot = pg.PlotWidget()
+        self.plot = theme.make_plot()
         self.plot.addLegend()
         self.plot.setLabel("bottom", "r [mm]")
         self.plot.showGrid(x=True, y=True, alpha=0.3)
@@ -94,6 +94,6 @@ class ComparePanel(QWidget):
             y = y * q[3]
             if self.normalize.isChecked() and y[0]:
                 y = y / y[0]
-            self.plot.plot(d.r * 1e3, y, pen=pg.mkPen(COLORS[k % len(COLORS)], width=2), symbol="o", symbolSize=4,
-                           symbolBrush=COLORS[k % len(COLORS)], name=item.text())
+            self.plot.plot(d.r * 1e3, y, pen=theme.series_pen(k), symbol="o", symbolSize=4,
+                           symbolBrush=theme.series(k), symbolPen=theme.series(k), name=item.text())
         self.plot.setLabel("left", f"{q[1]} [{q[2]}]")

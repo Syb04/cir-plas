@@ -5,9 +5,10 @@ from __future__ import annotations
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QListWidget, QSplitter,
-                               QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QHBoxLayout, QHeaderView, QLabel, QListWidget, QTableWidget, QTableWidgetItem, QTabWidget,
+                               QVBoxLayout, QWidget)
 
+from .. import theme
 from ..results_io import ResultData
 from .results_extra import DensityView, EdgeView, MapView, SpectrumView
 
@@ -32,8 +33,6 @@ RADIAL_QUANTITIES = [
     ("|j_z|", "軸方向電流密度 |J|（AC）", "A/m²", 1.0, "ac"),
 ]
 
-COLORS = ["#1565c0", "#ef6c00", "#2e7d32", "#6a1b9a", "#c62828", "#00838f", "#4e342e", "#37474f", "#827717", "#ad1457"]
-
 
 class RadialPlot(QWidget):
     def __init__(self, parent=None):
@@ -51,7 +50,7 @@ class RadialPlot(QWidget):
             item = QListWidgetItem()
             self.list.addItem(item)
             self.list.setItemWidget(item, cb)
-        self.plot = pg.PlotWidget()
+        self.plot = theme.make_plot()
         self.plot.addLegend()
         self.plot.setLabel("bottom", "r [mm]")
         self.plot.showGrid(x=True, y=True, alpha=0.3)
@@ -116,8 +115,8 @@ class RadialPlot(QWidget):
             y = y * q[3]
             if self.normalize.isChecked() and abs(y[0]) > 0:
                 y = y / y[0]
-            self.plot.plot(r, y, pen=pg.mkPen(COLORS[k % len(COLORS)], width=2), symbol="o", symbolSize=4,
-                           symbolBrush=COLORS[k % len(COLORS)], name=f"{q[1]} [{q[2]}]")
+            self.plot.plot(r, y, pen=theme.series_pen(k), symbol="o", symbolSize=4,
+                           symbolBrush=theme.series(k), symbolPen=theme.series(k), name=f"{q[1]} [{q[2]}]")
             k += 1
         # region boundaries
         edges = self.data.mesh.get("r_edges")
@@ -125,7 +124,7 @@ class RadialPlot(QWidget):
         if edges is not None and idx is not None:
             for i in range(1, len(idx)):
                 if idx[i] != idx[i - 1]:
-                    self.plot.addItem(pg.InfiniteLine(pos=edges[i] * 1e3, angle=90, pen=pg.mkPen("#9e9e9e", style=Qt.PenStyle.DashLine)))
+                    self.plot.addItem(pg.InfiniteLine(pos=edges[i] * 1e3, angle=90, pen=pg.mkPen(theme.tokens()["text_muted"], style=Qt.PenStyle.DashLine)))
 
 
 class WaveformPlot(QWidget):
@@ -137,7 +136,7 @@ class WaveformPlot(QWidget):
         self.list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.list.setMaximumWidth(260)
         self.list.itemSelectionChanged.connect(self.redraw)
-        self.plot = pg.PlotWidget()
+        self.plot = theme.make_plot()
         self.plot.addLegend()
         self.plot.setLabel("bottom", "t [ns]")
         self.plot.showGrid(x=True, y=True, alpha=0.3)
@@ -169,7 +168,7 @@ class WaveformPlot(QWidget):
             y = self.data.vector(item.text())
             if y is None:
                 continue
-            self.plot.plot(t, y, pen=pg.mkPen(COLORS[k % len(COLORS)], width=1.5), name=item.text())
+            self.plot.plot(t, y, pen=theme.series_pen(k, 1.5), name=item.text())
 
 
 class OverviewTable(QTableWidget):

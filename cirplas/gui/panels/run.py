@@ -1,16 +1,22 @@
-"""Run panel: mode, run/cancel, progress, convergence plot, log and run history."""
+"""Run pane (right side): mode, run/cancel, progress, convergence plot, log and run history, stacked vertically."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPlainTextEdit, QProgressBar,
                                QPushButton, QSplitter, QVBoxLayout, QWidget)
 
+from .. import theme
 from ..project_model import ProjectModel
 from ..runmanager import RunManager
+
+
+def _section(text: str) -> QLabel:
+    lab = QLabel(text)
+    lab.setProperty("role", "section")
+    return lab
 
 
 class RunPanel(QWidget):
@@ -25,51 +31,85 @@ class RunPanel(QWidget):
         self.manager.finished.connect(self._on_finished)
         self.manager.failed.connect(self._on_failed)
         lay = QVBoxLayout(self)
-        top = QHBoxLayout()
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(8)
         self.mode = QComboBox()
         self.mode.addItem("AC（線形・瞬時）", "ac")
         self.mode.addItem("TRAN（非線形）", "tran")
         self.mode.addItem("SC（密度自己無撞着 + AC）", "sc")
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("モード"))
+        mode_row.addWidget(self.mode, 1)
+        lay.addLayout(mode_row)
+        btns = QHBoxLayout()
         self.btn_run = QPushButton("実行 (F5)")
+        self.btn_run.setProperty("primary", "true")
+        self.btn_run.setMinimumHeight(34)
         self.btn_cancel = QPushButton("中止 (Esc)")
         self.btn_cancel.setEnabled(False)
         self.btn_run.clicked.connect(self.run)
         self.btn_cancel.clicked.connect(self.manager.cancel)
+        btns.addWidget(self.btn_run, 2)
+        btns.addWidget(self.btn_cancel, 1)
+        lay.addLayout(btns)
         self.status = QLabel("待機中")
+        self.status.setProperty("role", "muted")
+        self.status.setWordWrap(True)
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(6)
         self.progress.setVisible(False)
-        top.addWidget(QLabel("モード"))
-        top.addWidget(self.mode)
-        top.addWidget(self.btn_run)
-        top.addWidget(self.btn_cancel)
-        top.addWidget(self.status, 1)
-        top.addWidget(self.progress)
-        lay.addLayout(top)
-        split = QSplitter(Qt.Orientation.Horizontal)
-        self.plot = pg.PlotWidget(title="収束履歴")
+        lay.addWidget(self.status)
+        lay.addWidget(self.progress)
+        split = QSplitter(Qt.Orientation.Vertical)
+        plot_box = QWidget()
+        pl = QVBoxLayout(plot_box)
+        pl.setContentsMargins(0, 0, 0, 0)
+        pl.setSpacing(4)
+        pl.addWidget(_section("収束履歴"))
+        self.plot = theme.make_plot()
         self.plot.setLogMode(y=True)
-        self.plot.addLegend()
+        self.plot.addLegend(offset=(-10, 10))
         self.plot.setLabel("bottom", "反復 / 周期")
-        self.curve_ac = self.plot.plot([], [], pen=pg.mkPen("#1565c0", width=2), symbol="o", name="AC 振幅変化")
-        self.curve_bias = self.plot.plot([], [], pen=pg.mkPen("#ef6c00", width=2), symbol="s", name="バイアス残留 |I_dc/I_1|")
-        self.curve_pss = self.plot.plot([], [], pen=pg.mkPen("#2e7d32", width=2), symbol="t", name="周期定常の変化")
+        self.plot.setMinimumHeight(160)
+        self.curve_ac = self.plot.plot([], [], pen=theme.series_pen(1), symbol="o", symbolSize=6, name="AC 振幅変化")
+        self.curve_bias = self.plot.plot([], [], pen=theme.series_pen(0), symbol="s", symbolSize=6, name="バイアス残留 |I_dc/I_1|")
+        self.curve_pss = self.plot.plot([], [], pen=theme.series_pen(2), symbol="t", symbolSize=6, name="周期定常の変化")
+        pl.addWidget(self.plot, 1)
+        log_box = QWidget()
+        ll = QVBoxLayout(log_box)
+        ll.setContentsMargins(0, 0, 0, 0)
+        ll.setSpacing(4)
+        ll.addWidget(_section("ログ"))
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(5000)
-        self.history = QListWidget()
-        self.history.itemDoubleClicked.connect(self._open_history)
-        split.addWidget(self.plot)
-        split.addWidget(self.log)
+        self.log.setProperty("mono", "true")
+        self.log.setProperty("flat", "true")
+        ll.addWidget(self.log, 1)
         hist_box = QWidget()
         hl = QVBoxLayout(hist_box)
         hl.setContentsMargins(0, 0, 0, 0)
-        hl.addWidget(QLabel("ラン履歴（ダブルクリックで表示）"))
-        hl.addWidget(self.history)
+        hl.setSpacing(4)
+        hl.addWidget(_section("ラン履歴（ダブルクリックで表示）"))
+        self.history = QListWidget()
+        self.history.itemDoubleClicked.connect(self._open_history)
+        hl.addWidget(self.history, 1)
+        split.addWidget(plot_box)
+        split.addWidget(log_box)
         split.addWidget(hist_box)
-        split.setSizes([400, 500, 250])
+        split.setSizes([280, 320, 160])
         lay.addWidget(split, 1)
         self._reset_curves()
+
+    def restyle(self) -> None:
+        """Re-colour the convergence curves after a theme change."""
+        theme.restyle_plot(self.plot)
+        for k, curve in ((1, self.curve_ac), (0, self.curve_bias), (2, self.curve_pss)):
+            curve.setPen(theme.series_pen(k))
+            curve.setSymbolBrush(theme.series(k))
+            curve.setSymbolPen(theme.series(k))
 
     def _reset_curves(self) -> None:
         self._ac = []

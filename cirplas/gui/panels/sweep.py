@@ -7,12 +7,12 @@ import sys
 import time
 from pathlib import Path
 
-import pyqtgraph as pg
 from PySide6.QtCore import QProcess, Qt, Signal
-from PySide6.QtWidgets import (QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+from PySide6.QtWidgets import (QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
                                QPushButton, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ...core.analysis.sweep import SweepAxis, SweepSpec, get_path
+from .. import theme
 from ..project_model import ProjectModel
 from ..runmanager import worker_command
 
@@ -97,13 +97,13 @@ class SweepPanel(QWidget):
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0)
-        self.metric = QComboBox()
+        self.metric_combo = QComboBox()
         for k, label in METRICS:
-            self.metric.addItem(label, k)
-        self.metric.currentIndexChanged.connect(self.redraw)
-        self.plot = pg.PlotWidget()
+            self.metric_combo.addItem(label, k)
+        self.metric_combo.currentIndexChanged.connect(self.redraw)
+        self.plot = theme.make_plot()
         self.plot.showGrid(x=True, y=True, alpha=0.3)
-        rl.addWidget(self.metric)
+        rl.addWidget(self.metric_combo)
         rl.addWidget(self.plot, 1)
         split.addWidget(self.table)
         split.addWidget(right)
@@ -206,16 +206,16 @@ class SweepPanel(QWidget):
         self.plot.clear()
         if not self.results:
             return
-        key = self.metric.currentData()
+        key = self.metric_combo.currentData()
         xs, ys = [], []
         for r in self.results["runs"]:
             if r.get("ok") and key in r.get("metrics", {}):
                 xs.append(list(r["values"].values())[0])
                 ys.append(r["metrics"][key])
         if xs:
-            self.plot.plot(xs, ys, pen=pg.mkPen("#1565c0", width=2), symbol="o", symbolBrush="#1565c0")
+            self.plot.plot(xs, ys, pen=theme.series_pen(1), symbol="o", symbolBrush=theme.series(1), symbolPen=theme.series(1))
             self.plot.setLabel("bottom", self.results["spec"]["axes"][0]["label"])
-            self.plot.setLabel("left", self.metric.currentText())
+            self.plot.setLabel("left", self.metric_combo.currentText())
 
     def _open_row(self, item: QTableWidgetItem) -> None:
         path = self.table.item(item.row(), 0).data(Qt.ItemDataRole.UserRole)
