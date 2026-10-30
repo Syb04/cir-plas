@@ -53,3 +53,12 @@ def test_add_remove_region_keeps_mesh_consistent(window):
     panel.table.setCurrentCell(n0, 0)
     panel._remove_region()
     assert len(m.get("geometry.regions")) == n0 and m.is_valid
+
+
+def test_sweep_and_compare_tabs_exist(window):
+    assert window.tabs.count() == 5
+    sw = window.sweep
+    sw.path.setCurrentIndex(0)
+    assert sw._current_path() == "circuit.ports.W.sources.0.v"
+    assert float(sw.v_start.text()) < float(sw.v_stop.text())
+    assert window.compare.list.count() == 0

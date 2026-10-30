@@ -11,6 +11,8 @@ from PySide6.QtWidgets import (QDockWidget, QFileDialog, QMainWindow, QMessageBo
 from .. import __version__
 from ..core.project import default_project
 from .panels.circuit import CircuitPanel
+from .panels.compare import ComparePanel
+from .panels.sweep import SweepPanel
 from .panels.geometry import GeometryPanel
 from .panels.numerics import NumericsPanel
 from .panels.plasma import PlasmaPanel
@@ -88,6 +90,11 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.cross, "断面図")
         self.tabs.addTab(self.netlist, "ネットリスト")
         self.tabs.addTab(self.results, "結果")
+        self.sweep = SweepPanel(self.model)
+        self.compare = ComparePanel()
+        self.tabs.addTab(self.sweep, "スイープ")
+        self.tabs.addTab(self.compare, "比較")
+        self.sweep.open_result.connect(self._show_results)
         self.setCentralWidget(self.tabs)
         # left dock: parameter panels
         self.params = QTabWidget()
@@ -188,6 +195,7 @@ class MainWindow(QMainWindow):
     def _show_results(self, path: str) -> None:
         try:
             self.results.load(path)
+            self.compare.add_result(path)
             self.tabs.setCurrentWidget(self.results)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "結果の読み込み", str(exc))
