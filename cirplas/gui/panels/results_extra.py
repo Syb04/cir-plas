@@ -34,7 +34,7 @@ class MapView(QWidget):
         lay.addLayout(top)
         self.plot = pg.PlotWidget()
         self.plot.setLabel("bottom", "r [mm]")
-        self.plot.setLabel("left", "z [mm]（各セルの下部導体面基準）")
+        self.plot.setLabel("left", "z [mm]（ウェハ電極面基準）")
         self.plot.setAspectLocked(False)
         lay.addWidget(self.plot, 1)
         self.colorbar = None
