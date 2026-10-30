@@ -1,0 +1,220 @@
+{
+  "schema_version": 1,
+  "name": "demo_300mm_60MHz",
+  "geometry": {
+    "regions": [
+      {
+        "name": "wafer",
+        "r_out": 0.15,
+        "conductor": "W",
+        "stack": [
+          {
+            "material": "al2o3",
+            "t": 0.001,
+            "radial_coupling": true
+          },
+          {
+            "material": "si_wafer_p",
+            "t": 0.000775,
+            "radial_coupling": true
+          }
+        ],
+        "z_offset": 0.0
+      },
+      {
+        "name": "edge_gap",
+        "r_out": 0.151,
+        "conductor": "W",
+        "stack": [
+          {
+            "material": "al2o3",
+            "t": 0.001,
+            "radial_coupling": true
+          }
+        ],
+        "z_offset": 0.0
+      },
+      {
+        "name": "fr",
+        "r_out": 0.18,
+        "conductor": "W",
+        "stack": [
+          {
+            "material": "al2o3",
+            "t": 0.001,
+            "radial_coupling": true
+          },
+          {
+            "material": "quartz",
+            "t": 0.002,
+            "radial_coupling": true
+          },
+          {
+            "material": "si_fr",
+            "t": 0.004,
+            "radial_coupling": true
+          }
+        ],
+        "z_offset": -0.0052250000000000005
+      },
+      {
+        "name": "outer",
+        "r_out": 0.25,
+        "conductor": "G",
+        "stack": [
+          {
+            "material": "quartz",
+            "t": 0.006,
+            "radial_coupling": true
+          }
+        ],
+        "z_offset": -0.004225
+      }
+    ],
+    "gap": {
+      "type": "constant",
+      "value": 0.03,
+      "table": null,
+      "reference_region": null
+    },
+    "top": {
+      "conductor": "ground",
+      "stack": [
+        {
+          "material": "si_fr",
+          "t": 0.006,
+          "radial_coupling": true
+        }
+      ]
+    },
+    "outer_boundary": {
+      "type": "short",
+      "r": null,
+      "c": null
+    }
+  },
+  "plasma": {
+    "gas": "ar",
+    "pressure_pa": 6.67,
+    "gas_temperature_k": 400.0,
+    "density": {
+      "model": "parabolic",
+      "n0": 1e+16,
+      "alpha": 0.3,
+      "table": null,
+      "path": null
+    },
+    "te": {
+      "mode": "auto",
+      "value": null
+    },
+    "sheath": {
+      "model": "matrix",
+      "alpha_min": 2.0,
+      "stochastic": {
+        "model": "hardwall",
+        "kappa": 1.0
+      },
+      "ohmic_sheath": false,
+      "kappa_sh": 1.0,
+      "electron_current": "bsource",
+      "smoothing": 0.1,
+      "cap_form": "ecf"
+    },
+    "h_l": {
+      "mode": "auto",
+      "value": null
+    },
+    "nu_m": {
+      "mode": "auto",
+      "value": null
+    }
+  },
+  "circuit": {
+    "ports": {
+      "W": {
+        "sources": [
+          {
+            "f": 60000000.0,
+            "v": 400.0,
+            "phase_deg": 0.0
+          }
+        ],
+        "blocking_c": 2e-09,
+        "l_feed": 0.0,
+        "c_stray": 1e-10,
+        "dc_bias_guess": null
+      }
+    },
+    "fr": {
+      "type": "esc_coupled",
+      "tuning": {
+        "type": "none",
+        "c": null,
+        "l": null,
+        "r": 0.0,
+        "v_dc": null
+      }
+    },
+    "c_wf": {
+      "mode": "auto",
+      "value": null
+    },
+    "extra_netlist": ""
+  },
+  "numerics": {
+    "mesh": {
+      "n_r": {
+        "wafer": 24,
+        "edge_gap": 1,
+        "fr": 8,
+        "outer": 6
+      },
+      "grading": {
+        "wafer": 1.15,
+        "fr": 1.1
+      },
+      "refine": {},
+      "n_z": 1,
+      "z_grading": 1.0,
+      "sheath_nominal": null
+    },
+    "analysis": "tran",
+    "tran": {
+      "pts_per_cycle": 200,
+      "ramp_cycles": 3.0,
+      "cycles_min": 10,
+      "cycles_max": 200,
+      "meas_cycles": 4,
+      "pss_tol": 0.001
+    },
+    "dc_bias": {
+      "method": "two_stage",
+      "kappa_b": 0.02,
+      "cycles_a": 30,
+      "tol": 0.001,
+      "max_iter": 4
+    },
+    "density_iteration": {
+      "enabled": false,
+      "relax": 0.4,
+      "tol": 0.001,
+      "max_iter": 30,
+      "refine_with_tran": false
+    },
+    "ngspice": {
+      "backend": "auto",
+      "library_path": null,
+      "executable": null,
+      "options": {},
+      "use_klu": true,
+      "method": "gear"
+    },
+    "ac_sweep": null,
+    "sheath_voltage_guess": null
+  },
+  "outputs": {
+    "save_waveforms": true,
+    "save_raw_timestep": false
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "_comment": "Material database. eps_r: relative permittivity, sigma: conductivity [S/m]. Conductive layers (sigma >> omega*eps) behave as equipotential surfaces at RF.",
+  "vacuum":      {"eps_r": 1.0,  "sigma": 0.0,    "description": "Vacuum / gas gap"},
+  "al2o3":       {"eps_r": 9.5,  "sigma": 0.0,    "description": "Alumina (ESC ceramic)"},
+  "aln":         {"eps_r": 8.8,  "sigma": 0.0,    "description": "Aluminium nitride (ESC ceramic)"},
+  "quartz":      {"eps_r": 3.8,  "sigma": 0.0,    "description": "Fused silica (coupling ring, cover ring)"},
+  "y2o3":        {"eps_r": 12.0, "sigma": 0.0,    "description": "Yttria coating"},
+  "si_wafer_p":  {"eps_r": 11.7, "sigma": 50.0,   "description": "p-type Si wafer, ~2 ohm cm"},
+  "si_wafer_hr": {"eps_r": 11.7, "sigma": 0.1,    "description": "High-resistivity Si wafer, ~1000 ohm cm"},
+  "si_fr":       {"eps_r": 11.7, "sigma": 100.0,  "description": "Doped Si focus ring / electrode plate, ~1 ohm cm"},
+  "sic":         {"eps_r": 9.7,  "sigma": 1.0,    "description": "Semi-conductive SiC"},
+  "conductor":   {"eps_r": 1.0,  "sigma": 1.0e6,  "description": "Metal-like layer (treated as conductor)"}
+}

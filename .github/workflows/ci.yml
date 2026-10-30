@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  linux-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ngspice (shared library + CLI)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ngspice libngspice0 libngspice0-dev
+          ngspice --version | head -3
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Unit tests
+        run: pytest -q tests/unit
+      - name: Integration tests (ngspice)
+        run: pytest -q tests/integration
+      - name: Validation cases
+        run: pytest -q tests/validation

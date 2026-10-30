@@ -1,0 +1,13 @@
+{
+  "name": "ar",
+  "description": "Argon. Rate coefficients from Lieberman & Lichtenberg (2005) Table 3.3 (Maxwellian electrons). Te in eV, K in m^3/s.",
+  "mass_amu": 39.948,
+  "sigma_i_m2": 1.0e-18,
+  "E_iz_eV": 15.76,
+  "E_ex_eV": 12.14,
+  "rates": {
+    "K_iz": {"type": "arrhenius_power", "A": 2.34e-14, "b": 0.59, "E": 17.44},
+    "K_ex": {"type": "arrhenius_power", "A": 2.48e-14, "b": 0.33, "E": 12.78},
+    "K_el": {"type": "ll_argon_elastic", "A": 2.336e-14, "b": 1.609, "c2": 0.0618, "c3": -0.1171}
+  }
+}
