@@ -15,9 +15,27 @@ from .rawfile import read_rawfile
 from .shared import NgspiceError, NgspiceShared, RawResult
 
 
+def find_executable() -> Optional[str]:
+    """ngspice console executable. On Windows `ngspice.exe` is the GUI-window build; batch runs use the console
+    build `ngspice_con.exe` (also looked up in the default install folder C:\\Spice64\\bin)."""
+    import sys
+
+    if os.environ.get("CIRPLAS_NGSPICE_EXE"):
+        return os.environ["CIRPLAS_NGSPICE_EXE"]
+    if sys.platform.startswith("win"):
+        for name in ("ngspice_con", "ngspice_con.exe"):
+            exe = shutil.which(name)
+            if exe:
+                return exe
+        for path in (r"C:\Spice64\bin\ngspice_con.exe", r"C:\Spice\bin\ngspice_con.exe"):
+            if Path(path).exists():
+                return path
+    return shutil.which("ngspice")
+
+
 class BatchBackend:
     def __init__(self, executable: Optional[str] = None):
-        self.exe = executable or shutil.which("ngspice")
+        self.exe = executable or find_executable()
         if not self.exe:
             raise NgspiceError("ngspice executable not found")
         self.version = "batch"

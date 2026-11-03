@@ -3,7 +3,7 @@
 import numpy as np
 
 from cirplas.core.analysis.common import RunContext
-from cirplas.core.analysis.density import ambipolar_diffusion, radial_power_balance, run_density_iteration
+from cirplas.core.analysis.density import global_model_density, run_density_iteration
 from cirplas.core.constants import E_CHARGE
 from cirplas.core.project import (AutoOrValue, CircuitSpec, DensityIterationSpec, DensitySpec, GapSpec, Geometry, MeshSpec,
                                   NumericsSpec, OuterBoundary, PlasmaSpec, PortSpec, Project, Region, SourceSpec, TopSpec)
@@ -42,15 +42,40 @@ def test_v6_discrete_balance_matches_global_power_balance(backend):
     assert abs(p_e - E_CHARGE * eps_t * (axial + wall)) / p_e < 0.02
 
 
+def test_v6_mean_density_matches_global_model(backend):
+    """Criterion 1: the converged radial mean of n agrees with the Lieberman global model within 5 %."""
+    p = small_project()
+    res = run_density_iteration(RunContext(project=p, backend=backend, log=lambda m: None))
+    assert res.converged
+    rm = res.ac.model.mesh.radial
+    p_e = float(np.sum(res.ac.radial("s_e") * rm.areas))
+    n_global = global_model_density(p_e, res.ac.model.plasma, rm.r_edges[-1], res.ac.model.mesh.cells[0].l_p)
+    n_mean = float(np.sum(res.n * rm.areas) / np.sum(rm.areas))
+    assert abs(n_mean / n_global - 1) < 0.05
+
+
 def test_v6_independent_of_initial_guess(backend):
+    """Criterion 2: default relaxation converges within 30 iterations from 1/3x and 3x the initial density,
+    and both runs reach the same solution within 1e-3."""
     nn = []
-    for n0 in (3e15, 3e16):
+    for n0 in (1e16 / 3, 3e16):
         p = small_project(n0=n0)
-        ctx = RunContext(project=p, backend=backend, log=lambda m: None)
-        res = run_density_iteration(ctx)
-        assert res.converged and res.iterations <= 40
+        p.numerics.density_iteration.max_iter = 30
+        res = run_density_iteration(RunContext(project=p, backend=backend, log=lambda m: None))
+        assert res.converged and res.iterations <= 30
         nn.append(res.n)
-    assert np.max(np.abs(nn[0] - nn[1]) / nn[1]) < 5e-3
+    assert np.max(np.abs(nn[0] - nn[1]) / nn[1]) < 1e-3
+
+
+def test_v6_power_specified_density(backend):
+    """With a power target the amplitude is adjusted inside the density loop: the converged state delivers the target."""
+    p = small_project()
+    p.circuit.ports["W"].sources[0].power = 5.0
+    res = run_density_iteration(RunContext(project=p, backend=backend, log=lambda m: None))
+    assert res.converged
+    port = next(pr for pr in res.ac.ports if pr.port == "W")
+    assert abs(port.p / 5.0 - 1) < 0.02
+    assert res.notes["amplitudes"]["W"] != 200.0
 
 
 def test_v6_profile_smoother_than_heating(backend):
@@ -71,3 +96,22 @@ def test_v6_profile_smoother_than_heating(backend):
     n = res.n[wafer]
     u = lambda y: (y.max() - y.min()) / (2 * y.mean())
     assert u(n) < u(s_e)
+
+
+def test_v6_tran_refinement(backend):
+    """The TRAN confirmation step (refine_with_tran) corrects the AC-converged density only slightly at low power
+    and records the TRAN steps in the iteration history."""
+    from cirplas.core.analysis.density import refine_with_tran
+
+    p = small_project()
+    p.circuit.ports["W"].blocking_c = 1e-8
+    p.numerics.density_iteration.refine_with_tran = True
+    p.numerics.density_iteration.tran_refine_iter = 1
+    ctx = RunContext(project=p, backend=backend, log=lambda m: None)
+    res = run_density_iteration(ctx)
+    n_ac = res.n.copy()
+    proj, ac, tran = refine_with_tran(ctx, res)
+    assert tran is not None and res.notes["stages"][-1] == "tran"
+    assert len(res.n_history) == res.iterations + 2
+    assert np.max(np.abs(res.n - n_ac) / n_ac) < 0.05
+    assert proj.plasma.density.model == "table"

@@ -134,7 +134,23 @@ def extract_ac(res: RawResult, idx: NetlistIndex, model: CircuitModel, frequency
 
 
 def _auto_match_ports(project: Project) -> list[str]:
-    return [port for port, ps in project.circuit.ports.items() if ps.generator.type == "l_match" and ps.generator.auto]
+    return [port for port, ps in project.circuit.ports.items() if ps.generator.type in ("l_match", "pi_match") and ps.generator.auto]
+
+
+def design_match(gen, z_load: complex, frequency: float) -> dict:
+    """Matching-network element values for one port (L or pi network) as a `matching` entry."""
+    from .matching import design_l_match, design_pi_match
+
+    if gen.type == "pi_match":
+        m = design_pi_match(z_load, frequency, gen.r_gen, gen.q)
+        return {"l": m.l, "c": m.c1, "c2": m.c2, "topology": "pi", "z_load": z_load}
+    m = design_l_match(z_load, frequency, gen.r_gen, gen.topology)
+    return {"l": m.l, "c": m.c, "topology": m.topology, "z_load": z_load}
+
+
+def match_values(matching: dict) -> dict:
+    """port -> (L, C[, C2]) for the netlist builder."""
+    return {k: tuple(v[q] for q in ("l", "c", "c2") if q in v) for k, v in matching.items()}
 
 
 def _without_generators(project: Project, ports: list[str]) -> Project:
@@ -145,10 +161,8 @@ def _without_generators(project: Project, ports: list[str]) -> Project:
 
 
 def tune_matching(ctx: RunContext, frequency: float, est: Estimates | None = None) -> dict:
-    """Design the L matches of the auto-tuned ports from the quasi-linear AC impedance seen at the port
+    """Design the L / pi matches of the auto-tuned ports from the quasi-linear AC impedance seen at the port
     (sources driving the port chain directly)."""
-    from .matching import design_l_match
-
     ports = _auto_match_ports(ctx.project)
     if not ports:
         return {}
@@ -159,9 +173,9 @@ def tune_matching(ctx: RunContext, frequency: float, est: Estimates | None = Non
     for pr in ac.ports:
         if pr.port in ports:
             gen = ctx.project.circuit.ports[pr.port].generator
-            m = design_l_match(pr.z_chain, frequency, gen.r_gen, gen.topology)
-            out[pr.port] = {"l": m.l, "c": m.c, "topology": m.topology, "z_load": pr.z_chain}
-            ctx.log(f"port {pr.port}: L-match {m.topology} L={m.l*1e9:.1f} nH C={m.c*1e12:.1f} pF for Z_load={pr.z_chain:.2f} ohm")
+            m = out[pr.port] = design_match(gen, pr.z_chain, frequency)
+            ctx.log(f"port {pr.port}: match {m['topology']} L={m['l']*1e9:.1f} nH C={m['c']*1e12:.1f} pF"
+                    + (f" C2={m['c2']*1e12:.1f} pF" if "c2" in m else "") + f" for Z_load={pr.z_chain:.2f} ohm")
     return out
 
 
@@ -176,8 +190,6 @@ def run_ac(ctx: RunContext, frequency: float | None = None, est: Estimates | Non
         matching = tune_matching(ctx, frequency, est)
         # the plasma impedance depends on the drive level: re-design on the matched solution until the generator
         # sees its own impedance (a few passes)
-        from .matching import design_l_match
-
         import math as _m
 
         for k in range(10):
@@ -190,18 +202,20 @@ def run_ac(ctx: RunContext, frequency: float | None = None, est: Estimates | Non
                     z_in = trial.matching[pr.port].get("z_in", complex("nan"))
                     if not (abs(z_in - gen.r_gen) <= 0.03 * gen.r_gen):
                         done = False
-                        m = design_l_match(pr.z_chain, frequency, gen.r_gen, gen.topology)
+                        m = design_match(gen, pr.z_chain, frequency)
                         old = matching[pr.port]
                         # relaxed update in log space (the plasma load moves with the drive level)
                         a = 0.5
-                        l_new = _m.exp((1 - a) * _m.log(old["l"]) + a * _m.log(m.l)) if old["topology"] == m.topology else m.l
-                        c_new = _m.exp((1 - a) * _m.log(old["c"]) + a * _m.log(m.c)) if old["topology"] == m.topology else m.c
-                        matching[pr.port] = {"l": l_new, "c": c_new, "topology": m.topology, "z_load": pr.z_chain}
+                        if old["topology"] == m["topology"]:
+                            for q in ("l", "c", "c2"):
+                                if q in m:
+                                    m[q] = _m.exp((1 - a) * _m.log(old[q]) + a * _m.log(m[q]))
+                        matching[pr.port] = m
             ctx.progress({"stage": "match", "iteration": k, "z_in": {q: f"{trial.matching[q].get('z_in', complex('nan')):.2f}" for q in matching}})
             if done:
                 break
     matching = matching or {}
-    match_values = {k: (v["l"], v["c"]) for k, v in matching.items()}
+    match_vals = match_values(matching)
     match_topology = {k: v["topology"] for k, v in matching.items()}
     model = None
     n_cells = None
@@ -213,7 +227,7 @@ def run_ac(ctx: RunContext, frequency: float | None = None, est: Estimates | Non
             n_cells = build_radial_mesh(p.geometry, p.numerics.mesh).n_cells
             est = initial_estimates(p, n_cells)
         model = build_model(p, est)
-        netlist, idx = NetlistBuilder(model, "ac", ac=AcSettings(frequency=frequency), match_values=match_values, match_topology=match_topology).build()
+        netlist, idx = NetlistBuilder(model, "ac", ac=AcSettings(frequency=frequency), match_values=match_vals, match_topology=match_topology).build()
         res = ctx.backend.run(netlist, cancel=ctx.cancel)
         check_errors(res, "AC analysis")
         result = extract_ac(res, idx, model, frequency, est, it)

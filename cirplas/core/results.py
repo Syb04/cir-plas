@@ -142,7 +142,11 @@ def write_results(path: str | Path, project: Project, ac: Optional[AcResult] = N
             g.create_dataset("te", data=np.array(density.te_history))
             g.create_dataset("residual", data=np.array(density.residuals))
             g.create_dataset("relax", data=np.array(density.relax_history))
-            _write_scalar_attrs(g, {"converged": bool(density.converged), "iterations": density.iterations, "d_a": density.notes.get("d_a")})
+            stages = density.notes.get("stages") or ["ac"] * len(density.residuals)
+            g.create_dataset("stage", data=np.array(stages, dtype=h5py.string_dtype()))
+            _write_scalar_attrs(g, {"converged": bool(density.converged), "iterations": density.iterations, "d_a": density.notes.get("d_a"),
+                                    "power_history": json.dumps(density.notes.get("power_history", [])),
+                                    "amplitudes": json.dumps(density.notes.get("amplitudes", {}))})
         if log:
             f.create_dataset("log", data="\n".join(log))
 

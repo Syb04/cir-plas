@@ -405,11 +405,19 @@ def _row(b: _Builder, circ: CircuitSpec, port: str, y: int) -> int:
     def shunt(ctype: str, value: float, cid: str):
         b.hang(x, y, [(ctype, value, cid)])
 
-    if gen.type == "l_match":
+    if gen.type in ("l_match", "pi_match"):
         series("R", gen.r_gen, f"Rgen{port}")
         l_val = gen.l or 100e-9
         c_val = gen.c or 100e-12
-        if gen.topology in ("auto", "shunt_c_generator"):
+        if gen.type == "pi_match":
+            b.wire((x, y), (x + 2, y))
+            x += 2
+            shunt("C", c_val, f"Cmat{port}")
+            series("L", l_val, f"Lmat{port}")
+            b.wire((x, y), (x + 2, y))
+            x += 2
+            shunt("C", gen.c2 or 100e-12, f"Cmat2{port}")
+        elif gen.topology in ("auto", "shunt_c_generator"):
             b.wire((x, y), (x + 2, y))
             x += 2
             shunt("C", c_val, f"Cmat{port}")

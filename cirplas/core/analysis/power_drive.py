@@ -36,7 +36,7 @@ def power_targets(project: Project) -> dict[str, float]:
     return out
 
 
-def _with_amplitudes(project: Project, amps: dict[str, float]) -> Project:
+def with_amplitudes(project: Project, amps: dict[str, float]) -> Project:
     from ..project import set_source_field
 
     d = project.model_dump()
@@ -56,7 +56,7 @@ def run_power_drive(ctx: RunContext, mode: str = "tran", tol: float = 0.02, max_
         tran = run_tran(ctx, ac=ac) if mode in ("tran", "sc") else None
         return base, ac, tran, res
     # --- AC pre-scaling (exact for the linear circuit) ---
-    proj = _with_amplitudes(base, amps)
+    proj = with_amplitudes(base, amps)
     ctx_k = RunContext(project=proj, backend=ctx.backend, log=ctx.log, progress=ctx.progress, cancel=ctx.cancel)
     ac = run_ac(ctx_k)
     for pr in ac.ports:
@@ -64,7 +64,7 @@ def run_power_drive(ctx: RunContext, mode: str = "tran", tol: float = 0.02, max_
             amps[pr.port] = amps[pr.port] * math.sqrt(targets[pr.port] / pr.p)
     res.history.append({"stage": "ac", "amplitudes": dict(amps)})
     if mode == "ac":
-        proj = _with_amplitudes(base, amps)
+        proj = with_amplitudes(base, amps)
         ctx_k = RunContext(project=proj, backend=ctx.backend, log=ctx.log, progress=ctx.progress, cancel=ctx.cancel)
         ac = run_ac(ctx_k)
         res.converged = True
@@ -74,7 +74,7 @@ def run_power_drive(ctx: RunContext, mode: str = "tran", tol: float = 0.02, max_
     prev: dict[str, tuple[float, float]] = {}
     tran = None
     for k in range(max_iter + 1):
-        proj = _with_amplitudes(base, amps)
+        proj = with_amplitudes(base, amps)
         ctx_k = RunContext(project=proj, backend=ctx.backend, log=ctx.log, progress=ctx.progress, cancel=ctx.cancel)
         ac = run_ac(ctx_k)
         tran = run_tran(ctx_k, ac=ac)

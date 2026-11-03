@@ -36,7 +36,7 @@ class RunPanel(QWidget):
         self.mode = QComboBox()
         self.mode.addItem("AC（線形・瞬時）", "ac")
         self.mode.addItem("TRAN（非線形）", "tran")
-        self.mode.addItem("SC（密度自己無撞着 + AC）", "sc")
+        self.mode.addItem("SC（密度自己無撞着）", "sc")
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel("モード"))
         mode_row.addWidget(self.mode, 1)
@@ -76,6 +76,7 @@ class RunPanel(QWidget):
         self.curve_ac = self.plot.plot([], [], pen=theme.series_pen(1), symbol="o", symbolSize=6, name="AC 振幅変化")
         self.curve_bias = self.plot.plot([], [], pen=theme.series_pen(0), symbol="s", symbolSize=6, name="バイアス残留 |I_dc/I_1|")
         self.curve_pss = self.plot.plot([], [], pen=theme.series_pen(2), symbol="t", symbolSize=6, name="周期定常の変化")
+        self.curve_density = self.plot.plot([], [], pen=theme.series_pen(3), symbol="d", symbolSize=6, name="密度反復の残差")
         pl.addWidget(self.plot, 1)
         log_box = QWidget()
         ll = QVBoxLayout(log_box)
@@ -106,7 +107,7 @@ class RunPanel(QWidget):
     def restyle(self) -> None:
         """Re-colour the convergence curves after a theme change."""
         theme.restyle_plot(self.plot)
-        for k, curve in ((1, self.curve_ac), (0, self.curve_bias), (2, self.curve_pss)):
+        for k, curve in ((1, self.curve_ac), (0, self.curve_bias), (2, self.curve_pss), (3, self.curve_density)):
             curve.setPen(theme.series_pen(k))
             curve.setSymbolBrush(theme.series(k))
             curve.setSymbolPen(theme.series(k))
@@ -115,6 +116,8 @@ class RunPanel(QWidget):
         self._ac = []
         self._bias = []
         self._pss = []
+        self._density = []
+        self.curve_density.setData([], [])
         self.curve_ac.setData([], [])
         self.curve_bias.setData([], [])
         self.curve_pss.setData([], [])
@@ -150,6 +153,14 @@ class RunPanel(QWidget):
                 self._bias.append(max(abs(float(list(res.values())[0])), 1e-9))
                 self.curve_bias.setData(list(range(len(self._bias))), self._bias)
             self.status.setText(f"自己バイアス反復 {d.get('iteration')} ({d.get('cycles')} 周期) V_dc={ {k: round(v,1) for k,v in d.get('v_dc', {}).items()} }")
+        elif stage == "density":
+            self._density.append(max(float(d.get("residual", 0.0)), 1e-9))
+            self.curve_density.setData(list(range(1, len(self._density) + 1)), self._density)
+            txt = (f"密度反復 {d.get('iteration')}{'（TRAN 補正）' if d.get('tran') else ''} 残差 {d.get('residual', 0):.3g}"
+                   f"  Te={float(d.get('te', 0)):.2f} eV  n0={float(d.get('n_center', 0)):.3g} m⁻³")
+            if "power_error" in d:
+                txt += f"  電力誤差 {float(d['power_error']) * 100:.1f} %"
+            self.status.setText(txt)
         elif stage == "tran_pss":
             self._pss.append(max(float(d.get("pss_change", 0.0)), 1e-9))
             self.curve_pss.setData(list(range(1, len(self._pss) + 1)), self._pss)

@@ -17,6 +17,8 @@ python -m venv .venv && .venv/bin/pip install -e ".[gui,dev,gui-dev]"
 .venv/bin/cirplas-gui                       # GUI
 .venv/bin/cirplas-solve project.cirplas.json -o run.h5 --mode tran   # コマンドライン
 .venv/bin/cirplas-sweep project.cirplas.json --param circuit.ports.W.sources.0.v --values 200,300,400 --mode ac -o sweep_out
+# 2D スイープ（直積）：--param/--values を 2 組
+.venv/bin/cirplas-sweep project.cirplas.json --param circuit.ports.W.sources.0.v --values 150,250 --param plasma.pressure_pa --values 4,8,12 --mode sc -o sweep2d
 ```
 
 ## 2. GUI の構成
@@ -63,9 +65,14 @@ python -m venv .venv && .venv/bin/pip install -e ".[gui,dev,gui-dev]"
 1. **ファイル → 新規** で代表構成（300 mm、60 MHz、FR は ESC から容量結合）が読み込まれます。寸法・材料・圧力・電圧を変更します。
 2. 実行モード **AC** で実行（1 秒以内）。結果タブの「径方向プロファイル」で $|V_{sh}(r)|$、$S_e(r)$ を確認し、概要の $kR$、$\delta/(l_p/2)$ で定在波・表皮効果の目安を見ます。
 3. **TRAN** で非線形解析（代表構成で 1〜2 分）。自己バイアス、シース DC 電圧、高調波、電力収支が得られます。
-4. **SC** で電子密度の自己無撞着解（AC 内側反復、数秒）。「密度」タブに反復履歴が出ます。
-5. **スイープ** タブで、結合リング厚や RF 振幅などのパラメータを掃引し、均一性指標の変化を見ます。
-6. **比較** タブで複数のランの径方向プロファイルを重ねます。
+4. **SC** で電子密度の自己無撞着解（AC 内側反復、数秒）。「密度」タブに反復履歴が出ます。電源に電力指定があれば、
+   反復の中で振幅も合わせるので、得られる密度は指定電力に対応します。数値設定の「密度反復（SC）」で「TRAN で確定・補正」を
+   有効にすると、収束後に TRAN を実行し、TRAN の加熱分布で密度を補正します（密度タブで TRAN 補正の反復は色を変えて表示）。
+5. **スイープ** タブで、結合リング厚や RF 振幅などのパラメータを掃引し、均一性指標の変化を見ます。軸 2 を有効にすると
+   2 パラメータの直積を計算してヒートマップ表示します。グラフの点（セル）をクリックするとそのランが結果タブに開きます。
+   「結果を開く…」で過去のスイープの `results.json` を読み込めます。
+6. **比較** タブで複数のランの径方向プロファイル（電子密度 $n$ も可）を重ねます。基準ランに対する比（%）または差を下段に表示し、
+   凡例には基準ランとのパラメータの違いを自動で付記します。
 
 ## 4. 主なパラメータ
 
@@ -76,7 +83,8 @@ python -m venv .venv && .venv/bin/pip install -e ".[gui,dev,gui-dev]"
 | 密度モデル | プラズマ | 一様 / 放物 / テーブル / ファイル。SC モードでは初期値として使われます |
 | シースモデル | プラズマ | matrix（既定）または Child–Langmuir。`alpha_min` は最小シース幅（デバイ長単位） |
 | 電源 | 回路 / 回路図 | 周波数・振幅・位相の表。複数行で多周波。「電力指定」列に W を入れると供給電力一定になるよう振幅を反復します |
-| 発振器と整合器 | 回路 / 回路図 | 50 Ω 発振器＋L 型整合器を挿入。自動チューニングでは AC 解のポートインピーダンスから L/C を設計します |
+| 発振器と整合器 | 回路 / 回路図 | 50 Ω 発振器＋L 型または π 型（C1-L-C2）整合器を挿入。自動チューニングでは AC 解のポートインピーダンスから L/C を設計します。π 型は負荷 Q を指定可（空欄で最小） |
+| 密度反復（SC） | 数値設定 | 緩和係数（自動調整の初期値）、許容値、最大反復、TRAN で確定・補正とその回数 |
 | FR への給電 | 回路 / 回路図 | `esc_coupled`（既定）/ `separate`（独立電極ポート F と調整回路）。回路図の「構成」から切り替えると領域の導体・ポートも自動で整えます |
 | 外部回路（回路図） | 回路図 | 部品の配置とワイヤ配線で任意の外部回路を作成（`circuit.mode = "schematic"`、`circuit.schematic`） |
 | メッシュ | 数値設定 | 領域ごとの分割数と細密化、バルク層数 `N_z`（表皮効果を見るなら 4 以上） |
@@ -87,6 +95,7 @@ python -m venv .venv && .venv/bin/pip install -e ".[gui,dev,gui-dev]"
 - **電子加熱面密度 $S_e$**：バルクのオーミック加熱（軸方向＋径方向）と上下シースの確率的加熱の和を面積で割ったもの。均一性指標 $(\max-\min)/(2\,\mathrm{mean})$ はウェハ領域で評価します。
 - **シース DC 電圧 / RF 振幅**：導電性ウェハでは DC が面内でほぼ一定になり、RF 振幅の分布（定在波）がシース崩壊の有無を決めます。
 - **電力収支誤差**：電源電力と全散逸の差。1 % 以上なら周期定常未達や許容値の問題を疑ってください。
+- **警告**：電力収支誤差 > 1 %、周期定常未達、密度反復未収束は概要タブの先頭に「⚠ 警告」として表示されます。
 - **2D マップ**：$N_z>1$ のときのオーミック加熱密度と電流密度の $(r,z)$ 分布。径方向電流は中央面に対して反対称（表皮層で逆向き）になります。
 - **エッジ**：ウェハ端 ±40 mm のシース境界プロファイルと傾き、シース電圧。
 - **イオンエネルギー**：径方向プロファイルの「イオン平均エネルギー」「IEDF 幅の推定」は、無衝突シースの平均エネルギー $e\langle V_{sh}\rangle$ と、RF 変調によるバイモーダル幅の近似（イオン通過時間 $\tau_i = 3\bar s\sqrt{M/(2e\langle V_{sh}\rangle)}$）です。
@@ -98,7 +107,7 @@ python -m venv .venv && .venv/bin/pip install -e ".[gui,dev,gui-dev]"
 | 「timestep too small」で止まる | 数値設定のランプ周期を増やす、`pts_per_cycle` を 200 以上にする、`numerics.ngspice.options` で `reltol` を 3e-3 にする |
 | 電力収支誤差が大きい | 周期数を増やす（最大周期数を上げる）、自己バイアス許容値を小さくする |
 | 密度反復が振動する | 緩和係数を 0.2 程度に下げる |
-| ngspice が見つからない | `numerics.ngspice.library_path` または環境変数 `CIRPLAS_NGSPICE_LIB` に共有ライブラリのパスを指定 |
+| ngspice が見つからない | `numerics.ngspice.library_path` または環境変数 `CIRPLAS_NGSPICE_LIB` に共有ライブラリのパスを指定。共有ライブラリが無い場合はコンソール版実行ファイルでバッチ実行します（Windows は `ngspice_con.exe` を PATH・`C:Spice64bin` から探索。`CIRPLAS_NGSPICE_EXE` または `numerics.ngspice.executable` で指定可） |
 
 ## 7. ファイル
 

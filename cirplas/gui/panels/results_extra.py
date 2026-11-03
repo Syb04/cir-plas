@@ -233,10 +233,20 @@ class DensityView(QWidget):
             return
         r = np.asarray(it["r_centers"]) * 1e3
         n_hist = np.asarray(it["n"])
+        # stage of each update (n_hist[k] for k >= 1 follows update k-1): AC inner loop or TRAN correction
+        stages = [s.decode() if isinstance(s, bytes) else str(s) for s in it.get("stage", [])]
+        tran_named = False
         for k in range(n_hist.shape[0]):
             last = k == n_hist.shape[0] - 1
-            pen = pg.mkPen(theme.tokens()["accent"] if last else theme.tokens()["text_disabled"], width=3 if last else 1)
-            self.p1.plot(r, n_hist[k], pen=pen, name=("最終" if last else ("初期" if k == 0 else None)))
+            is_tran = k >= 1 and k - 1 < len(stages) and stages[k - 1] == "tran"
+            if last:
+                pen, name = pg.mkPen(theme.tokens()["accent"], width=3), "最終"
+            elif is_tran:
+                pen, name = theme.series_pen(2, 1.5), (None if tran_named else "TRAN 補正")
+                tran_named = True
+            else:
+                pen, name = pg.mkPen(theme.tokens()["text_disabled"], width=1), ("初期" if k == 0 else None)
+            self.p1.plot(r, n_hist[k], pen=pen, name=name)
         res = np.asarray(it["residual"])
         self.p2.plot(np.arange(1, len(res) + 1), np.maximum(res, 1e-9), pen=theme.series_pen(1), symbol="o", symbolBrush=theme.series(1))
         a = it["attrs"]

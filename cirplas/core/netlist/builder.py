@@ -407,17 +407,25 @@ class NetlistBuilder:
         L.append(f"* ---- port {port}")
         src_node = f"n{port}s"
         gen = ps.generator
-        if gen.type == "l_match":
-            # generator (open-circuit amplitude = source amplitude) -> r_gen -> L network -> port chain
+        if gen.type in ("l_match", "pi_match"):
+            # generator (open-circuit amplitude = source amplitude) -> r_gen -> L / pi network -> port chain
             L.append(self._source_line(port, f"n{port}g", ps))
             idx.i_source[port] = nm.vec_branch(f"Bsrc_{port}" if self.mode == "tran" else f"Vsrc_{port}")
             idx.node_source[port] = f"n{port}g"
             L.append(f"Rgen_{port} n{port}g n{port}r {fmt(gen.r_gen)}")
-            l_val, c_val = self.match_values.get(port, (gen.l, gen.c))
-            if l_val is None or c_val is None:
+            vals = self.match_values.get(port, (gen.l, gen.c, gen.c2) if gen.type == "pi_match" else (gen.l, gen.c))
+            if any(v is None for v in vals):
                 raise ValueError(f"port {port}: matching network values are not set (auto tuning needs an AC pre-solve)")
-            topo = self.match_topology.get(port, gen.topology if gen.topology != "auto" else "shunt_c_generator")
-            if topo == "shunt_c_generator":
+            l_val, c_val = vals[0], vals[1]
+            if gen.type == "pi_match":
+                topo = "pi"
+            else:
+                topo = self.match_topology.get(port, gen.topology if gen.topology != "auto" else "shunt_c_generator")
+            if topo == "pi":
+                L.append(f"Cmat_{port} n{port}r 0 {fmt(c_val)}")
+                L.append(f"Lmat_{port} n{port}r {src_node} {fmt(l_val)}")
+                L.append(f"Cmat2_{port} {src_node} 0 {fmt(vals[2])}")
+            elif topo == "shunt_c_generator":
                 L.append(f"Cmat_{port} n{port}r 0 {fmt(c_val)}")
                 L.append(f"Lmat_{port} n{port}r {src_node} {fmt(l_val)}")
             else:

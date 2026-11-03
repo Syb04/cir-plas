@@ -242,7 +242,7 @@ def postprocess_tran(res: RawResult, idx: NetlistIndex, model: CircuitModel, per
             i_src = -vec(idx.i_source[port])
             p_src = time_average(t_w, vs * i_src)
             gen = model.project.circuit.ports[port].generator
-            if gen.type == "l_match":
+            if gen.type in ("l_match", "pi_match"):
                 p_diss += time_average(t_w, i_src * i_src) * gen.r_gen  # generator internal resistance
         z = hv.c[1] / hi.c[1] if abs(hi.c[1]) > 0 else complex("nan")
         ports.append(PortResult(port=port, v_dc=hv.dc, v_1=hv.amplitude(1), i_1=hi.amplitude(1),

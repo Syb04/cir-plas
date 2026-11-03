@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QCheckBox, QHBoxLayout, QHeaderView, QLabel, QListWidget, QTableWidget, QTableWidgetItem, QTabWidget,
                                QVBoxLayout, QWidget)
 
@@ -183,6 +184,18 @@ class OverviewTable(QTableWidget):
         rows.append(("ファイル", str(data.path)))
         rows.append(("プロジェクト", f"{data.meta.get('project_name', '')} (hash {data.meta.get('project_hash', '')})"))
         rows.append(("モード / ngspice", f"{data.meta.get('mode', '')} / {data.meta.get('ngspice_version', '')}"))
+        rows.extend(("⚠ 警告", w) for w in self.warnings(data))
+        it = data.iteration
+        if it is not None:
+            ia = it["attrs"]
+            n_fin = np.asarray(it["n"])[-1]
+            n_tran = sum(1 for s in it.get("stage", []) if (s.decode() if isinstance(s, bytes) else str(s)) == "tran")
+            rows.append(("密度反復 回数 / 収束 / TRAN 補正", f"{int(ia.get('iterations', 0))} / {'収束' if bool(ia.get('converged', False)) else '未収束'} / {n_tran}"))
+            rows.append(("SC 中心密度 / 平均密度 [m⁻³]", f"{n_fin[0]:.3e} / {float(np.mean(n_fin)):.3e}"))
+            rows.append(("SC 密度均一性（ウェハ領域）", self._uniformity(data, n_fin)))
+            amps = ia.get("amplitudes")
+            if amps and amps not in ("{}", b"{}"):
+                rows.append(("SC 電力指定で調整した振幅 [V]", amps.decode() if isinstance(amps, bytes) else str(amps)))
         pa = data.plasma.get("attrs", {})
         if pa:
             rows.append(("Te [eV] / ν_m [1/s] / h_l", f"{float(pa.get('te', 0)):.3f} / {float(pa.get('nu_m', 0)):.3e} / {float(pa.get('h_l', 0)):.3f}"))
@@ -211,9 +224,28 @@ class OverviewTable(QTableWidget):
             rows.append(("均一性 of 下部シース DC 電圧（ウェハ領域）", self._uniformity(data, data.tran["cells"]["vsh_b_dc"])))
             rows.append(("計算時間 [s]", f"{float(a.get('runtime_s', 0)):.1f}"))
         self.setRowCount(len(rows))
+        warn_color = QColor(theme.tokens()["error"])
         for i, (k, v) in enumerate(rows):
             self.setItem(i, 0, QTableWidgetItem(k))
             self.setItem(i, 1, QTableWidgetItem(v))
+            if k == "⚠ 警告":
+                for c in (0, 1):
+                    self.item(i, c).setForeground(warn_color)
+
+    @staticmethod
+    def warnings(data: ResultData) -> list[str]:
+        """Warning badges of the overview (spec 04 section 8)."""
+        out = []
+        if data.tran is not None:
+            a, m = data.tran["attrs"], data.tran["metrics"]
+            pbe = abs(float(m.get("power_balance_error", 0)))
+            if pbe > 0.01:
+                out.append(f"電力収支誤差 {pbe * 100:.2f} % > 1 %")
+            if not bool(a.get("pss_converged", True)):
+                out.append("周期定常に未達（cycles_max に到達）")
+        if data.iteration is not None and not bool(data.iteration["attrs"].get("converged", True)):
+            out.append("密度反復が未収束（緩和係数を下げるか最大反復を増やしてください）")
+        return out
 
     @staticmethod
     def _uniformity(data: ResultData, y) -> str:

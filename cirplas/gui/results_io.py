@@ -25,6 +25,13 @@ class ResultData:
                 self.iteration = {k: g[k][()] for k in g}
                 self.iteration["attrs"] = dict(g.attrs)
             self.meta = {k: (v.decode() if isinstance(v, bytes) else v) for k, v in f["meta"].attrs.items()}
+            self.project: dict = {}
+            if "project" in f:
+                raw = f["project"][()]
+                try:
+                    self.project = json.loads(raw.decode() if isinstance(raw, bytes) else str(raw))
+                except (ValueError, TypeError):
+                    self.project = {}
             if "mesh" in f:
                 self.mesh = {k: f["mesh"][k][()] for k in f["mesh"]}
                 self.mesh["attrs"] = dict(f["mesh"].attrs)

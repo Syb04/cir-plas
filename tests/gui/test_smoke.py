@@ -68,9 +68,12 @@ def test_add_remove_region_keeps_mesh_consistent(window):
 
 def test_sweep_and_compare_tabs_exist(window):
     sw = window.sweep
-    sw.path.setCurrentIndex(0)
-    assert sw._current_path() == "circuit.ports.W.sources.0.v"
-    assert float(sw.v_start.text()) < float(sw.v_stop.text())
+    sw.axis1.path.setCurrentIndex(0)
+    assert sw.axis1.current_path() == "circuit.ports.W.sources.0.v"
+    assert float(sw.axis1.v_start.text()) < float(sw.axis1.v_stop.text())
+    assert len(sw.spec().axes) == 1
+    sw.axis2.setChecked(True)
+    assert len(sw.spec().axes) == 2
     assert window.compare.list.count() == 0
 
 

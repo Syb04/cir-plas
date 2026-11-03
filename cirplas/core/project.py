@@ -227,14 +227,16 @@ class SourceSpec(StrictModel):
 
 
 class GeneratorSpec(StrictModel):
-    """50-ohm generator with an L-type matching network between the generator and the port chain
+    """50-ohm generator with an L- or pi-type matching network between the generator and the port chain
     (spec 01 section 5.1, Phase 2). With auto=True the elements are tuned from the AC port impedance."""
 
-    type: Literal["none", "l_match"] = "none"
+    type: Literal["none", "l_match", "pi_match"] = "none"
     r_gen: float = Field(50.0, gt=0, description="generator source impedance [ohm]")
     auto: bool = Field(True, description="tune L/C from the AC impedance of the port at the fundamental")
     l: Optional[float] = Field(None, gt=0, description="series inductance [H] (manual)")
-    c: Optional[float] = Field(None, gt=0, description="shunt capacitance [F] (manual)")
+    c: Optional[float] = Field(None, gt=0, description="shunt capacitance [F] (manual; generator side for pi_match)")
+    c2: Optional[float] = Field(None, gt=0, description="load-side shunt capacitance of the pi match [F] (manual)")
+    q: Optional[float] = Field(None, gt=0, description="loaded Q of the pi match (auto tuning; None: lowest feasible)")
     topology: Literal["auto", "shunt_c_generator", "shunt_c_load"] = Field(
         "auto", description="where the shunt capacitor sits: on the generator side (load R < r_gen) or on the load side (load R > r_gen)"
     )
@@ -364,7 +366,8 @@ class DensityIterationSpec(StrictModel):
     relax: float = Field(0.4, gt=0, le=1)
     tol: float = Field(1e-3, gt=0)
     max_iter: int = Field(30, ge=1)
-    refine_with_tran: bool = False
+    refine_with_tran: bool = Field(False, description="confirm with TRAN and correct the density with the TRAN heating")
+    tran_refine_iter: int = Field(1, ge=0, le=5, description="TRAN-based density corrections when refine_with_tran (0: confirm only)")
 
 
 class AcSweepSpec(StrictModel):

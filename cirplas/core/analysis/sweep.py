@@ -149,4 +149,10 @@ def summary_metrics(h5_path: str | Path) -> dict[str, float]:
             out["sc_n_center"] = float(n[-1][0])
             out["sc_n_mean"] = float(np.mean(n[-1]))
             out["sc_uniformity_n"] = uniformity(n[-1])
+            out["sc_center_edge_n"] = center_edge(n[-1])
+            a = f["iteration"].attrs
+            out["sc_iterations"] = float(a.get("iterations", len(f["iteration/residual"])))
+            out["sc_converged"] = float(bool(a.get("converged", False)))
+            if len(f["iteration/te"]):
+                out["sc_te"] = float(f["iteration/te"][()][-1])
     return out

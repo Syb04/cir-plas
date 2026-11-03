@@ -2,6 +2,7 @@
 
 usage: cirplas-sweep base.cirplas.json --sweep sweep.json -o outdir [--jobs N] [--progress jsonl]
    or: cirplas-sweep base.cirplas.json --param circuit.ports.W.sources.0.v --values 200,300,400 --mode ac -o outdir
+       (repeat --param/--values for a 2D sweep over the Cartesian product)
 """
 
 from __future__ import annotations
@@ -33,8 +34,8 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="cirplas-sweep")
     ap.add_argument("project")
     ap.add_argument("--sweep", help="sweep spec JSON")
-    ap.add_argument("--param", help="parameter path (single axis)")
-    ap.add_argument("--values", help="comma separated values for --param")
+    ap.add_argument("--param", action="append", help="parameter path (repeat for a second axis)")
+    ap.add_argument("--values", action="append", help="comma separated values for the matching --param")
     ap.add_argument("--mode", default="ac", choices=["ac", "tran", "sc"])
     ap.add_argument("-o", "--outdir", required=True)
     ap.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 1))
@@ -46,13 +47,18 @@ def main(argv=None) -> int:
     if args.sweep:
         spec = SweepSpec.from_json(Path(args.sweep).read_text(encoding="utf-8"))
     elif args.param and args.values:
-        vals = []
-        for v in args.values.split(","):
-            try:
-                vals.append(float(v))
-            except ValueError:
-                vals.append(v)
-        spec = SweepSpec(mode=args.mode, axes=[SweepAxis(path=args.param, values=vals, label=args.param)])
+        if len(args.param) != len(args.values):
+            ap.error("every --param needs one --values")
+        axes = []
+        for path, text in zip(args.param, args.values):
+            vals = []
+            for v in text.split(","):
+                try:
+                    vals.append(float(v))
+                except ValueError:
+                    vals.append(v)
+            axes.append(SweepAxis(path=path, values=vals, label=path))
+        spec = SweepSpec(mode=args.mode, axes=axes)
     else:
         ap.error("either --sweep or --param/--values is required")
     if args.sweep is None:

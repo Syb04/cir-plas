@@ -106,7 +106,9 @@ def run_tran(ctx: RunContext, ac: Optional[AcResult] = None) -> TranResult:
     cycles = spec.cycles_min
     ramp = spec.ramp_cycles * (1.0 / f_max)
 
-    match_values = {k: (v["l"], v["c"]) for k, v in (ac.matching or {}).items()}
+    from .ac import match_values as _match_values
+
+    match_values = _match_values(ac.matching or {})
     match_topology = {k: v["topology"] for k, v in (ac.matching or {}).items()}
     _, idx0 = NetlistBuilder(model, "tran", tran=TranSettings(t_max, 1.0, t_max, ramp), match_values=match_values, match_topology=match_topology).build()
     clamp_nodes = {port: _forced_nodes(model, idx0, port) for port in bias_ports}

@@ -40,7 +40,11 @@ def read_rawfile(path: str | Path) -> list[RawResult]:
         names = []
         for vl in var_lines[:nvar]:
             parts = vl.split()
-            names.append(parts[1].lower())
+            nm = parts[1].lower()
+            # the Windows console build writes branch currents as "i(x)"; use the shared-library name "x#branch"
+            if nm.startswith("i(") and nm.endswith(")"):
+                nm = nm[2:-1] + "#branch"
+            names.append(nm)
         if kind == "Binary:":
             per_point = nvar * (16 if is_complex else 8)
             raw = np.frombuffer(data, dtype=np.float64, count=npts * nvar * (2 if is_complex else 1), offset=body_start)
