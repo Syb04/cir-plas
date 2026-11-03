@@ -317,6 +317,12 @@ $$K_{iz}(T_e)\, n_g\, d_{eff} = u_B, \qquad d_{eff} = \frac{1}{2}\frac{R\, l_p}{
   `plasma.gas` には同梱ガス名か、同じスキーマのガス JSON のパスを指定できます。各係数は `arrhenius_power`、`table`（$T_e$–$K$ の表、両対数補間）、
   `cross_section`（断面積の表をマクスウェル分布で積分：$K = (2/\sqrt\pi) T_e^{-3/2}\sqrt{2e/m_e}\int \sigma(E) E e^{-E/T_e} dE$、
   読み込み時に 0.2〜50 eV の表へ変換。CSV ファイル（E [eV], σ [m²]）または配列で与え、LXCat の書き出しをそのまま使える）。
+  LXCat のダウンロードファイルは `"lxcat": {"file": ..., "species": "Xe"}` でそのまま読めます（ELASTIC、各 EXCITATION 準位、IONIZATION。
+  EFFECTIVE しか無い場合は非弾性断面積を引いて運動量移行断面積にする。しきい値は各ブロックの 3 行目、質量は `mass_amu` か m/M から）。
+  励起が複数準位のときは $\varepsilon_c$ の励起項を $\sum_j K_{ex,j}E_{ex,j}$ とします。イオン–中性粒子断面積 $\sigma_i$ は LXCat に無いので JSON で与えます。
+  試行（Xe、Biagi-v7.1）：$K_{iz}(3\,\mathrm{eV}) = 1.09\times10^{-15}\,\mathrm{m^3/s}$ は Chabert ら 2012 の全体モデル用フィット（$1.14\times10^{-15}$）と 5 % 以内。
+  6.67 Pa・$R$ = 100 mm で $T_e$ = 1.53 eV（Ar 2.57 eV）、同電力で密度は Ar の約 2.8 倍。$\sigma_i$ を 1/2・2 倍すると平均密度は −22 %・+30 % 変わる
+  （$h_l$、$h_R$、$D_a$ を通じて）ため、$\sigma_i$ の出典は重要です。
   モデルは電気的陽性（正イオン 1 種、付着なし）なので、負イオンを含むガス（`electronegative: true` または `K_att`）は読み込み時に拒否します。
 
 ### 8.2 Level 1：自己無撞着（Phase 2）

@@ -105,21 +105,29 @@ class GasData:
     mass_amu: float
     sigma_i: float  # ion-neutral cross section [m^2] for lambda_i = 1/(n_g sigma_i)
     E_iz: float  # eV
-    E_ex: float  # eV
+    E_ex: float  # eV (single lumped excitation level; unused when `excitations` is given)
     K_iz: RateCoefficient
     K_ex: RateCoefficient
     K_el: RateCoefficient
+    excitations: tuple = ()  # ((RateCoefficient, threshold eV), ...) for several excitation levels
+    source: str = ""  # data provenance (e.g. "LXCat Biagi-v7.1")
 
     @property
     def mass_kg(self) -> float:
         return self.mass_amu * AMU
+
+    def excitation_loss(self, te: float) -> float:
+        """Sum of K_ex,j E_ex,j [eV m^3/s]."""
+        if self.excitations:
+            return sum(k(te) * e for k, e in self.excitations)
+        return self.K_ex(te) * self.E_ex
 
     def eps_c(self, te: float) -> float:
         """Collisional energy loss per electron-ion pair created [eV] (L&L eq. 3.5.8)."""
         kiz = self.K_iz(te)
         from .constants import M_E
 
-        return (kiz * self.E_iz + self.K_ex(te) * self.E_ex + self.K_el(te) * 3.0 * (M_E / self.mass_kg) * te) / kiz
+        return (kiz * self.E_iz + self.excitation_loss(te) + self.K_el(te) * 3.0 * (M_E / self.mass_kg) * te) / kiz
 
     def nu_m(self, te: float, n_g: float) -> float:
         """Electron momentum-transfer collision frequency [1/s] (elastic rate x gas density)."""
@@ -131,12 +139,14 @@ def bundled_gases() -> list[str]:
     return sorted(p.name[:-5] for p in base.iterdir() if p.name.endswith(".json"))
 
 
+def _resolve(path: str, base_dir: Path | None) -> Path:
+    p = Path(path)
+    return base_dir / p if not p.is_absolute() and base_dir is not None else p
+
+
 def _load_cross_section(d: dict, base_dir: Path | None) -> tuple[np.ndarray, np.ndarray]:
     if "file" in d:
-        path = Path(d["file"])
-        if not path.is_absolute() and base_dir is not None:
-            path = base_dir / path
-        data = np.loadtxt(path, delimiter=d.get("delimiter", ","), comments="#")
+        data = np.loadtxt(_resolve(d["file"], base_dir), delimiter=d.get("delimiter", ","), comments="#")
         e, s = data[:, 0], data[:, 1] * float(d.get("sigma_scale", 1.0))
     else:
         e, s = np.asarray(d["energy_eV"], dtype=float), np.asarray(d["sigma_m2"], dtype=float)
@@ -145,12 +155,112 @@ def _load_cross_section(d: dict, base_dir: Path | None) -> tuple[np.ndarray, np.
     return e, s
 
 
+@dataclass(frozen=True)
+class LxcatProcess:
+    kind: str  # ELASTIC, EFFECTIVE, EXCITATION, IONIZATION, ATTACHMENT
+    species: str  # 2nd line (target, optionally "-> product")
+    param: float  # 3rd line: m/M (elastic/effective) or the energy loss [eV] (excitation/ionization); nan for attachment
+    energy: np.ndarray
+    sigma: np.ndarray
+    database: str = ""
+    process: str = ""
+
+
+_LXCAT_KINDS = ("ELASTIC", "EFFECTIVE", "EXCITATION", "IONIZATION", "ATTACHMENT")
+
+
+def parse_lxcat(path: str | Path) -> list[LxcatProcess]:
+    """Read an LXCat cross-section download (block format: keyword, target, parameter, comments, table between dashes)."""
+    lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
+    out: list[LxcatProcess] = []
+    database = ""
+    i = 0
+    while i < len(lines):
+        s = lines[i].strip()
+        if s.startswith("DATABASE:"):
+            database = s.split(":", 1)[1].strip()
+        if s in _LXCAT_KINDS:
+            kind = s
+            species = lines[i + 1].strip()
+            j = i + 2
+            param = float("nan")
+            if kind != "ATTACHMENT":
+                param = float(lines[j].split()[0])
+                j += 1
+            process = ""
+            while j < len(lines) and not lines[j].strip().startswith("-----"):
+                if lines[j].startswith("PROCESS:"):
+                    process = lines[j].split(":", 1)[1].strip()
+                j += 1
+            j += 1
+            data = []
+            while j < len(lines) and not lines[j].strip().startswith("-----"):
+                parts = lines[j].split()
+                if len(parts) >= 2:
+                    data.append((float(parts[0]), float(parts[1])))
+                j += 1
+            arr = np.array(data, dtype=float)
+            out.append(LxcatProcess(kind, species, param, arr[:, 0], arr[:, 1], database, process))
+            i = j
+        i += 1
+    return out
+
+
+def _table_rate(e: np.ndarray, s: np.ndarray) -> RateCoefficient:
+    order = np.argsort(e)
+    e, s = e[order], s[order]
+    keep = np.concatenate([[True], np.diff(e) > 0])  # drop duplicated energies
+    return RateCoefficient(type="table", te=TE_TABLE, k=tuple(maxwellian_rate(e[keep], s[keep], t) for t in TE_TABLE))
+
+
+def _gas_from_lxcat(raw: dict, base_dir: Path | None) -> GasData:
+    """Gas JSON with {"lxcat": {"file": ..., "species": "Xe"}}: momentum transfer, every excitation level and the ionization
+    of the species from an LXCat file (an EFFECTIVE set is converted to elastic momentum transfer by subtracting the
+    inelastic cross sections)."""
+    spec = raw["lxcat"]
+    procs = parse_lxcat(_resolve(spec["file"], base_dir))
+    target = spec.get("species")
+
+    def mine(p: LxcatProcess) -> bool:
+        return target is None or p.species.split("->")[0].split("<->")[0].strip() == target
+
+    procs = [p for p in procs if mine(p)]
+    if any(p.kind == "ATTACHMENT" for p in procs):
+        raise ValueError(f"gas '{raw.get('name')}': attachment (electronegative chemistry) is not supported by the plasma model")
+    iz = [p for p in procs if p.kind == "IONIZATION"]
+    ex = [p for p in procs if p.kind == "EXCITATION"]
+    el = [p for p in procs if p.kind == "ELASTIC"]
+    eff = [p for p in procs if p.kind == "EFFECTIVE"]
+    if len(iz) != 1:
+        raise ValueError(f"LXCat set must contain exactly one ionization process for {target} (found {len(iz)})")
+    if el:
+        k_el = _table_rate(el[0].energy, el[0].sigma)
+    elif eff:
+        e = eff[0].energy
+        s = eff[0].sigma - sum(np.interp(e, p.energy, p.sigma, left=0.0, right=0.0) for p in ex + iz)
+        k_el = _table_rate(e, np.maximum(s, 0.0))
+    else:
+        raise ValueError(f"LXCat set has no elastic/effective momentum-transfer cross section for {target}")
+    excitations = tuple((_table_rate(p.energy, p.sigma), float(p.param)) for p in ex)
+    mass = raw.get("mass_amu")
+    if mass is None:
+        from .constants import M_E
+
+        ratio = (el or eff)[0].param  # m/M
+        mass = M_E / ratio / AMU
+    zero = RateCoefficient(type="table", te=TE_TABLE, k=tuple(0.0 for _ in TE_TABLE))
+    return GasData(name=raw["name"], mass_amu=float(mass), sigma_i=float(raw["sigma_i_m2"]), E_iz=float(iz[0].param),
+                   E_ex=0.0, K_iz=_table_rate(iz[0].energy, iz[0].sigma), K_ex=zero, K_el=k_el, excitations=excitations,
+                   source=(el or eff)[0].database or "LXCat")
+
+
 @lru_cache(maxsize=None)
 def gas_db(name: str) -> GasData:
     """Bundled gas (``ar``) or a gas JSON file given by path (same schema; cross-section files are relative to it).
 
-    The plasma model is electropositive (single positive ion, no attachment): data for electronegative gases
-    cannot be used as is."""
+    Rates are given per process (`rates`: K_iz, K_ex or a list `excitations`, K_el) or read from an LXCat download
+    (`lxcat`). The plasma model is electropositive (single positive ion, no attachment): data for electronegative gases
+    cannot be used."""
     base_dir = None
     if name.lower().endswith(".json") or Path(name).suffix:
         path = Path(name)
@@ -165,28 +275,34 @@ def gas_db(name: str) -> GasData:
             raise KeyError(f"unknown gas '{name}' (bundled: {', '.join(bundled_gases())}; or give a gas JSON file path)") from exc
     if raw.get("electronegative") or "K_att" in raw.get("rates", {}):
         raise ValueError(f"gas '{raw.get('name', name)}': electronegative chemistry is not supported by the plasma model")
+    if "lxcat" in raw:
+        return _gas_from_lxcat(raw, base_dir)
     rates = raw["rates"]
 
-    def rc(key: str) -> RateCoefficient:
-        d = dict(rates[key])
+    def rc(d: dict) -> RateCoefficient:
+        d = dict(d)
         kind = d.pop("type")
         if kind == "cross_section":
-            e, s = _load_cross_section(d, base_dir)
-            return RateCoefficient(type="table", te=TE_TABLE, k=tuple(maxwellian_rate(e, s, t) for t in TE_TABLE))
+            return _table_rate(*_load_cross_section(d, base_dir))
         if kind == "table":
             return RateCoefficient(type="table", te=tuple(float(v) for v in d["te"]), k=tuple(float(v) for v in d["k"]))
+        d.pop("E_eV", None)
         return RateCoefficient(type=kind, **d)
 
+    excitations = tuple((rc(d), float(d["E_eV"])) for d in rates.get("excitations", []))
     return GasData(
         name=raw["name"],
         mass_amu=raw["mass_amu"],
         sigma_i=raw["sigma_i_m2"],
         E_iz=raw["E_iz_eV"],
-        E_ex=raw["E_ex_eV"],
-        K_iz=rc("K_iz"),
-        K_ex=rc("K_ex"),
-        K_el=rc("K_el"),
+        E_ex=raw.get("E_ex_eV", 0.0),
+        K_iz=rc(rates["K_iz"]),
+        K_ex=rc(rates["K_ex"]) if "K_ex" in rates else RateCoefficient(type="table", te=TE_TABLE, k=tuple(0.0 for _ in TE_TABLE)),
+        K_el=rc(rates["K_el"]),
+        excitations=excitations,
     )
+
+
 
 
 Material = Union[str, MaterialProps]
