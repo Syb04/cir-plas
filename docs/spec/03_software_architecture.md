@@ -40,47 +40,63 @@ Web ベースの UI とは異なり操作は軽快で、pyqtgraph は $10^6$ 点
 ```
 cirplas/
   core/
-    constants.py        物理定数、単位変換
-    project.py          プロジェクトスキーマ（pydantic）、検証、版移行
-    geometry.py         領域・スタック・ギャップ形状の定義と整合性チェック
-    materials.py        材料 DB（eps_r, sigma）、ガス DB（反応速度係数、質量、断面積）
-    mesh.py             径方向/軸方向メッシュ、面積・長さ・高さ ζ、チェーンインダクタンス
-    plasma.py           n(r), Te, nu_m, h_l, u_B, n_s, Drude 値、診断量
-    sheath_models.py    Q(V) モデル（matrix, child）、I_e、R_stoc、線形化 C_lin
+    constants.py        物理定数
+    project.py          プロジェクトスキーマ（pydantic）、検証、JSON パス操作
+    materials.py        材料 DB、ガス DB（Arrhenius・表・断面積のマクスウェル積分・LXCat 読み込み、複数励起準位）
+    mesh.py             径方向/軸方向メッシュ、面積・長さ・高さ、チェーンインダクタンス
+    plasma.py           n(r), Te（粒子バランス）, nu_m, h_l, h_R, u_B, n_s, Drude 値、診断量
+    sheath_models.py    Q(V) モデル（matrix, child, collisional, auto）、I_e、R_stoc、線形化 C_lin
+    elements.py         セル・境界ごとの回路要素値（CircuitModel）
+    schematic.py        回路図（自由配置）モデル、ポート導出、表形式からの変換
+    estimate.py         未知数の計数（MNA）と計算時間の見積り
+    result_data.py      HDF5 結果の読み込み（GUI・レポート共通）、警告判定
+    results.py          HDF5 結果の書き出し
+    report.py           HTML レポート（インライン SVG）
     netlist/
-      builder.py        メッシュ＋要素値 → ネットリスト文字列（AC/TRAN 変種）
-      external.py       外部回路テンプレート、ユーザ定義ネットリストの検証（禁止文・名前空間）
+      builder.py        メッシュ＋要素値 → ネットリスト（AC/TRAN、外部回路・整合器・回路図）、既定 .options
       naming.py         命名規約
+      user_elements.py  ユーザ定義ネットリストの検証
     ngspice/
-      shared.py         sharedspice ctypes バインディング、コールバック、ベクトル取得
-      session.py        1 回の解析実行（投入→実行→蓄積→停止）、周期統計、測定窓
-      rawfile.py        バッチモード rawfile リーダ（デバッグ用）
-      capabilities.py   版・機能の自己テスト（Q= 容量、klu）
+      shared.py         sharedspice ctypes バインディング（bg_run、SendData コールバックによる早期停止）
+      backend.py        バックエンド選択（共有ライブラリ / コンソール版 ngspice_con.exe のバッチ実行）
+      rawfile.py        バッチ実行の rawfile リーダ（電流ベクトル名を共有ライブラリ形式に正規化）
     analysis/
-      ac.py             AC 解析（準線形反復、多周波重ね合わせ、周波数掃引）
-      tran.py           TRAN 解析（ランプ、周期定常判定、測定窓）
-      dc_bias.py        自己バイアス外側反復（Stage A/B、セカント/Broyden）
-      power_drive.py    電力指定駆動（Phase 2）
-      density.py        Level 1 密度反復（パワーバランス＋拡散、緩和制御）
-      sweep.py          パラメータスイープのジョブ展開と集約
+      common.py         実行コンテキスト、初期推定、モデル構築
+      ac.py             AC 解析（準線形反復、周波数掃引、整合器の自動設計）
+      tran.py           TRAN 解析（ランプ、自己バイアス反復、周期定常の判定と延長）
+      pss.py            周期定常の監視（早期停止・必要周期数の外挿）
+      matching.py       L 型・π 型整合器の設計
+      power_drive.py    電力指定駆動
+      density.py        Level 1 密度反復（電力指定、TRAN 補正、全体モデル）
+      sweep.py          パラメータスイープの展開と集約メトリクス
+      optimize.py       FR 調整・均一性の自動最適化
     post/
-      resample.py, spectrum.py, heating.py, sheath.py, metrics.py, diagnostics.py
-    results.py          HDF5 スキーマの読み書き、ラン履歴
+      signals.py        再標本化、高調波、時間平均
+      tran_post.py      TRAN 後処理（シース、加熱、ポート、電力収支、2D マップ）
+      iedf.py           IEDF（減衰電位モデル）
   worker/
-    cli.py              `cirplas-solve project.json -o run.h5 --mode tran --progress jsonl`
+    cli.py              cirplas-solve（--mode ac|tran|sc、サブコマンド sweep / optimize / report）
+    sweep_cli.py        cirplas-sweep（並列ジョブ）
+    optimize_cli.py     cirplas-optimize
+    report_cli.py       cirplas-report
   gui/
-    app.py              エントリポイント、テーマ、国際化
-    models/             プロジェクト ↔ ウィジェットのバインディング、Undo/Redo
-    panels/             geometry, plasma, circuit, numerics, run, results, compare, sweep
-    plots/              pyqtgraph ベースの共通プロット部品（プロファイル、2D マップ、波形、FFT）
-    runmanager.py       ワーカプロセスの起動・監視・キャンセル・並列キュー
+    app.py, mainwindow.py   エントリポイント、メインウィンドウ（タブ・ドック・メニュー）
+    project_model.py    プロジェクト ↔ ウィジェットのバインディング、Undo/Redo
+    runmanager.py       ワーカプロセスの起動・監視・キャンセル
+    estimates.py        見積りのバックグラウンド計算と係数の較正
+    autosave.py         自動保存と復元
+    theme.py            テーマ（ライト / ダーク）
+    results_io.py       結果読み込み（core.result_data の再公開）
+    panels/             geometry, plasma, circuit, numerics, run, results, results_extra, sweep, optimize, compare
+    widgets/            paramform（設定フォーム）, crosssection（断面図）, schematic（回路図エディタ）
   data/
-    gases/ar.json       反応速度係数（L&L Table 3.3 形式）、質量、λ_i 係数
+    gases/ar.json       Ar の反応速度係数（L&L Table 3.3）、質量、σ_i
     materials.json      Al2O3, Si(ドープ別), SiC, 石英, Y2O3 等
-    examples/           例題プロジェクト（代表構成、検証ケース）
-  tests/
-    unit/ integration/ validation/ gui/
+    examples/           例題プロジェクト
 ```
+
+（2026-11-03 更新：実装に合わせた構成。v0.2 の設計案から、`geometry.py` は `project.py`・`mesh.py` に、`dc_bias.py` は `tran.py` に、
+`post/` の各モジュールは `tran_post.py` に統合し、`session.py`・`capabilities.py` は作っていません。）
 
 - `core` は GUI に依存しません（Qt を import しない）。CLI とノートブックから直接利用できます。
 - `gui` は `core` と `worker` のみに依存します。
@@ -169,26 +185,31 @@ cirplas/
 ### 4.2 結果ファイル（HDF5）
 
 ```
-/meta              attrs: schema_version, cirplas_version, ngspice_version, created, project_hash, mode
-/project           プロジェクト JSON（文字列）
-/netlist           生成ネットリスト（文字列）、AC 版・TRAN 版
-/mesh              r_edges, r_centers, areas, z_levels[i,j], zeta, region_index, chain_dL
-/plasma            n0(r), ns(r), Te, nu_m, h_l, 診断量（omega_pe, lambda_D, delta, omega_psr, lambda_eff, kR）
-/ac/f{k}           freq, V_nodes(complex)[node], I_branches(complex)[branch], node_names, branch_names
-/tran
-  /cycle_stats     cycle index, metrics[name][cycle]
-  /window          time[N_t], V[N_t, N_node], I[N_t, N_branch]（再サンプル版）, (任意) raw_time, raw_V, raw_I
-  /spectrum        harmonics[node/branch][k]（複素）
-/post
-  /radial          Vsh_dc_b(r), Vsh_1_b(r), Vsh_dc_t, Vsh_1_t, s_mean, s_max, z_sheath, theta, Jz_1(r),
-                   S_ohm_bulk(r), S_stoc_b(r), S_stoc_t(r), S_ohm_sh(r), S_e(r), Gamma_i(r), E_ion(r)
-  /map             p_ohm[r,z], Jr_1[r,z], Jz_1[r,z], Bphi_1[r,z]
-  /ports           V_dc, V_1, I_1, P, Z（電極ごと）
-  /metrics         uniformity_U, center_edge_ratio, std, power_balance_error, runtime_s
-/iteration         k, n(r)[k], Te[k], residual[k]（Level 1）
-/sweep             param_path, values, child run への参照（または埋め込み）
-/log               ngspice 出力、警告
+/meta              schema_version, cirplas_version, ngspice_version, created, mode, project_hash, project_name（attrs）
+/project           プロジェクト JSON（実行時の内容。SC では収束密度のテーブル・調整後の振幅を含む）
+/netlist/ac, /netlist/tran   生成したネットリスト
+/mesh              r_centers, r_edges, areas, region_index, l_gap, l_p, z_bulk, z_offset, z_surface_*, s_b, s_t（attrs: n_z, region_names）
+/plasma            n0(r), ns(r)（attrs: te, n_g, lambda_i, h_l, h_r, nu_m, u_b, v_e, gas）
+/ac                attrs: frequency, iterations
+  /cells           セルごとの量（vsh_b, vsh_t, j_z, s_e, p_ohm_bulk, p_stoc_* …、複素数は振幅・位相）
+  /ports/<P>       attrs: v, i, z, p
+  /diagnostics     attrs: f_pe, f_psr, lambda_eff, kR_wafer, delta, delta_over_half_bulk, …
+  /estimates       v1_b, v1_t, s_b, s_t（線形化の推定値）
+/tran              attrs: period, cycles, meas_cycles, bias_iterations, v_dc_clamp, pss_converged, pss_change, runtime_s
+  history          反復・延長の履歴（JSON）
+  /cells           vsh_b_dc, vsh_b_1, vsh_b_min/max, vsh_t_dc, vsh_t_1, s_b_mean, s_b_max, s_t_mean, p_ohm_bulk, p_stoc_b/t,
+                   p_ion_b/t, p_el_b/t, j_z_1, e_ion_mean, e_ion_width, s_e
+  /ports/<P>       attrs: v_dc, v_1, i_1, phase_deg, p, p_source, z_re, z_im, i_dc
+  /metrics         attrs: p_source_total, p_total_dissipated, power_balance_error, p_ohm_radial_total
+  /map             p_ohm[r,z], jz_1[r,z], jr_1[r,z], p_ohm_radial, z_mid, r_centers, r_boundaries
+  /iedf            energy[E], f[cell, E], collisionless_fraction, peak_low, peak_high
+  /window          測定窓の時刻と全ベクトル（outputs.save_waveforms）
+/iteration         r_centers, n[k, r], te[k], residual[k], relax[k], stage[k]（ac / tran）
+                   attrs: converged, iterations, d_a, amplitudes, power_history（SC）
+/log               ワーカのログ
 ```
+
+（2026-11-03 更新：実装の形式。スイープは各点の `run.h5` と、全点のメトリクスをまとめた `results.json` を出力ディレクトリに書きます。）
 
 - 単位・説明は各データセットの attrs（`unit`, `description`）に記録します。
 - 大きい配列は gzip 圧縮（レベル 4）とチャンク化。
@@ -234,7 +255,8 @@ cirplas/
 | GUI | pytest-qt によるオフスクリーン・スモークテスト、パネルの入出力バインディング | Linux（`QT_QPA_PLATFORM=offscreen`） |
 | 性能 | 02 章 §7 の時間予算をベンチマークで監視 | Windows ランナー |
 
-- GitHub Actions：Linux ジョブ（lint, 単体, 結合, GUI スモーク）、Windows ジョブ（公式配布の `ngspice.dll` を取得して結合・検証、パッケージ作成）。
+- GitHub Actions（実装）：Linux ジョブ（apt の ngspice 共有ライブラリで単体・結合・検証・GUI スモーク）、Windows ジョブ（MSYS2 の ngspice を取得してパッケージ作成）。
+  開発機の Windows では共有ライブラリが無ければコンソール版 `ngspice_con.exe` のバッチ実行でテストが通ります。
 - 開発環境（Linux）で GUI まで動作確認できることを重視します（案 A/B の利点）。
 
 ## 9. 配布とライセンス
@@ -244,9 +266,10 @@ cirplas/
 - ビルド手順（実装済み、`packaging/`）：PyInstaller（`cirplas.spec`）で GUI `cirplas-gui.exe` とワーカ `cirplas-solve.exe` を 1 つの onedir バンドル
   `dist/CirPlas/` に生成し、Inno Setup（`installer.iss`、日本語既定）でインストーラを作ります。ngspice は **MSYS2 の `mingw-w64-x86_64-ngspice`**
   パッケージから `libngspice-0.dll` と依存ランタイム DLL を取得して同梱します（`fetch_ngspice_msys2.sh`）。GitHub Actions の `windows-package`
-  ジョブがこれを自動実行し、インストーラとバンドルを成果物として保存します。凍結バンドルでは GUI が隣接する `cirplas-solve.exe` を起動します。
+  ジョブがこれを自動実行し、インストーラとバンドルを成果物として保存します。凍結バンドルでは GUI が隣接する `cirplas-solve.exe` を起動し、
+  スイープ・最適化・レポートも同じ実行ファイルのサブコマンド（`cirplas-solve sweep|optimize|report`）で動かします。
   2026-10-30 に GitHub Actions 上でインストーラ生成まで成功しました（成果物 `CirPlas-windows`、約 220 MB、MSYS2 UCRT64 の ngspice 42 同梱）。
-  Windows 実機での起動・解析の確認は未了です。
+  最新版インストーラの Windows 実機での動作確認は後日実施します（06 章の追加決定）。
 - UI 既定言語（決定）：日本語（英語に切替可）。
 - 本ツールのライセンス（決定：OSS）：**Apache-2.0 を提案**します（特許条項を含み企業由来の OSS で一般的。MIT/BSD-3 でも可）。
   リポジトリに `LICENSE`、`NOTICE`、`THIRD_PARTY_NOTICES.md` を置きます。

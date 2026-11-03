@@ -188,8 +188,7 @@ Cext_sW    W   0    {Cstray_W}
 
 - **基本周期**：複数周波数の場合、基本周期は $1/\gcd(f_k)$（例：2 MHz ＋ 60 MHz → 500 ns）。周期ごとの統計はこの単位で取ります。
 - **周期定常判定**：測定窓の最初の周期と最後の周期で、電極電圧の DC 成分・基本波振幅、代表セルのバルク電位を比較し、
-  相対変化が `pss_tol` 未満なら定常とみなします。未達の場合は周期数を 1.6 倍にして再実行します（`cycles_max` まで）。
-  再実行方式は単純で頑健ですが計算が重複するため、将来はコールバックで周期統計を監視し `bg_halt` で早期停止する方式に置き換えます。
+  相対変化が `pss_tol` 未満なら定常とみなします。未達の場合の延長は下の「早期停止」のとおりです（`cycles_max` まで）。
 - **出力**：測定窓の全ノード電圧・センス電流（可変刻み）。それ以前は周期統計のみ保持します。
 - **多周波**：測定窓は基本周期の整数倍。LF の 1 周期に HF 数十周期が含まれるため計算量は増えます（§7）。
 
@@ -274,7 +273,7 @@ v0.1 で記載した「$C_b$ を縮小する Stage A」方式はオプション 
 
 ### 4.1 形態
 
-- **ngspice 共有ライブラリ**（Windows：`ngspice.dll`、Linux：`libngspice.so`）を **ワーカプロセス**にロードして使用します（`sharedspice.h` API）。
+- **ngspice 共有ライブラリ**（Windows：`libngspice-0.dll` / `ngspice.dll`、Linux：`libngspice.so`）を **ワーカプロセス**にロードして使用します（`sharedspice.h` API）。
   - `ngSpice_Init(SendChar, SendStat, ControlledExit, SendData, SendInitData, BGThreadRunning, user)`
   - `ngSpice_Circ(lines)`：ネットリストをメモリから投入（ファイル I/O 不要）
   - `ngSpice_Command("bg_run")` / `"bg_halt"`：バックグラウンド実行と停止
