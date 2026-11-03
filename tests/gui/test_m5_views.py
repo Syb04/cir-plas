@@ -9,6 +9,8 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
+from PySide6.QtCore import Qt  # noqa: E402
+
 
 def _fake_result(path, v=200.0, n_scale=1.0, converged=True, stages=("ac", "tran", "tran")):
     """Minimal HDF5 result with the groups the views read (AC + SC iteration)."""
@@ -77,7 +79,7 @@ def test_sweep_2d_heatmap_and_click(qtbot, model, tmp_path):
     (tmp_path / "results.json").write_text(json.dumps(results), encoding="utf-8")
     panel.load_results(tmp_path / "results.json")
     assert panel.table.rowCount() == 9
-    keys = [panel.metric_combo.itemData(i) for i in range(panel.metric_combo.count())]
+    keys = [panel.metrics.item(i).data(Qt.ItemDataRole.UserRole) for i in range(panel.metrics.count())]
     assert set(keys) == {"sc_n_center", "ac_uniformity_se"}
     assert panel.colorbar is not None  # heatmap drawn
     assert SweepPanel._is_log(v2) and not SweepPanel._is_log(v1)
@@ -87,7 +89,7 @@ def test_sweep_2d_heatmap_and_click(qtbot, model, tmp_path):
     j = int(np.searchsorted(ye, 1.0)) - 1
     assert panel._grid["outputs"][(i, j)].endswith("7.h5")
     # switching the metric redraws without error
-    panel.metric_combo.setCurrentIndex(1)
+    panel.set_metrics(["ac_uniformity_se"])
     assert panel.colorbar is not None
 
 
@@ -103,6 +105,15 @@ def test_sweep_1d_points(qtbot, model, tmp_path):
                         "runs": runs})
     assert [p["output"] for p in panel._points] == ["0.h5", "2.h5"]
     assert panel.table.item(1, 2).text() == "失敗"
+    # several metrics at once (relative to the first point)
+    runs2 = [dict(r, ok=True, metrics={"sc_te": 3.0 - 0.1 * r["index"], "sc_n_center": 1e16 * (1 + r["index"])}) for r in runs]
+    panel.show_results({"spec": {"mode": "sc", "name": "s", "axes": [{"path": "plasma.pressure_pa", "values": [2.0, 4.0, 6.0], "label": "p"}]},
+                        "runs": runs2})
+    panel.set_metrics(["sc_te", "sc_n_center"])
+    curves = panel.plot.getPlotItem().listDataItems()
+    assert len(curves) == 2 and all(abs(c.yData[0] - 1.0) < 1e-12 for c in curves)
+    panel.relative.setChecked(False)
+    assert max(max(c.yData) for c in panel.plot.getPlotItem().listDataItems()) > 1e15
 
 
 def test_compare_reference_ratio_and_legend(qtbot, tmp_path):

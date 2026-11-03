@@ -51,6 +51,7 @@ def main(argv=None) -> int:
     ap.add_argument("-o", "--output", required=True, help="optimized project JSON")
     ap.add_argument("--history", default=None, help="write every evaluation to this JSON file")
     ap.add_argument("--progress", choices=["jsonl", "text", "none"], default="text")
+    ap.add_argument("--cancel-file", default=None, help="stop after the current evaluation as soon as this file exists")
     args = ap.parse_args(argv)
 
     base = load_project(args.project)
@@ -65,7 +66,9 @@ def main(argv=None) -> int:
             print(", ".join(f"{k}={v}" for k, v in d.items()), file=sys.stderr, flush=True)
 
     try:
-        ctx = RunContext(project=base, backend=get_backend(base.numerics.ngspice), log=lambda m: None, progress=progress)
+        cancel_path = Path(args.cancel_file) if args.cancel_file else None
+        ctx = RunContext(project=base, backend=get_backend(base.numerics.ngspice), log=lambda m: None, progress=progress,
+                         cancel=(lambda: cancel_path.exists()) if cancel_path else (lambda: False))
         res = optimize(ctx, spec)
     except Exception as exc:  # noqa: BLE001
         print(f"ERROR: {exc}", file=sys.stderr)
@@ -73,11 +76,11 @@ def main(argv=None) -> int:
     out = Path(args.output)
     out.write_text(res.project.to_json(), encoding="utf-8")
     if args.history:
-        Path(args.history).write_text(json.dumps({"objective": spec.objective, "mode": spec.mode, "best": res.values,
+        Path(args.history).write_text(json.dumps({"objective": spec.objective, "mode": spec.mode, "best": res.values, "cancelled": res.cancelled,
                                                   "best_objective": res.objective, "evaluations": res.history}, indent=2, default=str),
                                       encoding="utf-8")
     progress({"stage": "optimize_done", "best": res.values, "objective": res.objective, "evaluations": res.evaluations,
-              "output": str(out), "done": True})
+              "output": str(out), "cancelled": res.cancelled, "done": True})
     return 0
 
 

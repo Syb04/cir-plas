@@ -74,7 +74,7 @@ def test_v6_power_specified_density(backend):
     res = run_density_iteration(RunContext(project=p, backend=backend, log=lambda m: None))
     assert res.converged
     port = next(pr for pr in res.ac.ports if pr.port == "W")
-    assert abs(port.p / 5.0 - 1) < 0.02
+    assert abs(port.p / 5.0 - 1) < 0.005
     assert res.notes["amplitudes"]["W"] != 200.0
 
 

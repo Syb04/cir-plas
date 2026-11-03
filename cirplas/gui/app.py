@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtCore import QCoreApplication
+from PySide6.QtCore import QCoreApplication, QTimer
 from PySide6.QtWidgets import QApplication
 
 from ..core.project import default_project
@@ -35,6 +35,7 @@ def main(argv=None) -> int:
     if len(argv) > 1 and argv[1].endswith(".json"):
         model.load(argv[1])
     win.show()
+    QTimer.singleShot(0, win.offer_restore)
     return app.exec()
 
 

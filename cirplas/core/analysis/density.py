@@ -121,6 +121,7 @@ def run_density_iteration(ctx: RunContext, est: Optional[Estimates] = None) -> D
     n = density_profile(p.plasma.density, r, p.geometry.r_wall)
     targets = power_targets(p)
     amps = {port: float(p.circuit.ports[port].sources[0].v) for port in targets}
+    p_tol = max(2.0 * spec.tol, 2e-3)
     alpha = spec.relax
     history = [n.copy()]
     te_hist: list[float] = []
@@ -166,7 +167,9 @@ def run_density_iteration(ctx: RunContext, est: Optional[Estimates] = None) -> D
                       "n_center": float(n[0]), "n_mean": float(np.mean(n)), **({"power_error": p_err} if targets else {})})
         ctx.log(f"density iteration {k}: residual={res:.3e} alpha={alpha:.2f} Te={plasma.te:.3f} n0={n[0]:.3e}"
                 + (f" power error={p_err:.2%} V={ {q: round(v, 2) for q, v in amps.items()} }" if targets else ""))
-        if res < spec.tol and p_err < max(10 * spec.tol, 0.01):
+        # the amplitude correction of this pass also moves the density: require a small power error too, so that the
+        # final state (corrected amplitudes, relaxed density) delivers the target within ~p_tol
+        if res < spec.tol and p_err < p_tol:
             converged = True
             break
         if ctx.cancel():
@@ -174,6 +177,10 @@ def run_density_iteration(ctx: RunContext, est: Optional[Estimates] = None) -> D
     # final AC with the converged profile (and amplitudes) for consistent reporting
     proj_f = _project_with_density(with_amplitudes(p, amps), r, n)
     ac = run_ac(_sub_context(ctx, proj_f), est=est, max_iter=6)
+    if targets:
+        final = {pr.port: pr.p for pr in ac.ports if pr.port in targets}
+        power_hist.append({"amplitudes": dict(amps), "powers": final, "final": True})
+        ctx.log("density iteration: final power error " + ", ".join(f"{q}={(final[q] - targets[q]) / targets[q]:+.2%}" for q in targets))
     return DensityIterationResult(r_centers=r, n_history=history, te_history=te_hist, residuals=residuals, relax_history=relax_hist,
                                   converged=converged, iterations=len(residuals), ac=ac,
                                   notes={"d_a": ambipolar_diffusion(ac.model.plasma), "final_project": proj_f.to_json(),

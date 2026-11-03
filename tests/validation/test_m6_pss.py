@@ -4,7 +4,7 @@ The shared-library path halts the run from the SendData callback. Here it is emu
 backend: the full run is replayed through the same monitor and truncated where the callback would have halted.
 The batch path extrapolates the per-period decay to the number of periods needed."""
 
-import numpy as np
+import pytest
 
 from cirplas.core.analysis.common import RunContext
 from cirplas.core.analysis.pss import normalize_name
@@ -65,10 +65,31 @@ def test_early_stop_halts_at_steady_state(backend):
     assert abs(tr.post.power_balance_error) < 0.01
 
 
+class WithoutMonitor:
+    """Backend wrapper without the callback interface: forces the batch extrapolation path on any backend."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.version = getattr(inner, "version", "")
+
+    def run(self, netlist, cancel=None):
+        return self.inner.run(netlist, cancel=cancel)
+
+
 def test_batch_prediction_needs_few_reruns(backend):
     """With enough periods after the ramp the decay is extrapolated: the steady state is reached in at most two reruns."""
-    tr = run_tran(RunContext(project=_project(cycles_min=12), backend=backend, log=lambda m: None))
+    tr = run_tran(RunContext(project=_project(cycles_min=12), backend=WithoutMonitor(backend), log=lambda m: None))
     pss = [h for h in tr.history if h["stage"] == "pss"]
     assert tr.pss_converged
     assert len(pss) <= 2, [(h["cycles"], h["pss_change"], h.get("predicted_extra")) for h in pss]
     assert all(h.get("predicted_extra") for h in pss)
+
+
+def test_shared_library_callback_early_stop(backend):
+    """Real SendData-callback early stop (runs where the shared library is available, e.g. CI on Linux)."""
+    if not getattr(backend, "supports_monitor", False):
+        pytest.skip("ngspice shared library not available (batch backend)")
+    tr = run_tran(RunContext(project=_project(), backend=backend, log=lambda m: None))
+    pss = [h for h in tr.history if h["stage"] == "pss"]
+    assert pss and pss[-1].get("early_stop") and tr.pss_converged
+    assert tr.cycles < 120

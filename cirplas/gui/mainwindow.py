@@ -16,10 +16,12 @@ from .panels.circuit import CircuitPanel
 from .panels.compare import ComparePanel
 from .panels.geometry import GeometryPanel
 from .panels.numerics import NumericsPanel
+from .panels.optimize import OptimizePanel
 from .panels.plasma import PlasmaPanel
 from .panels.results import ResultsPanel
 from .panels.run import RunPanel
 from .panels.sweep import SweepPanel
+from .autosave import AutoSaver
 from .project_model import ProjectModel
 from .widgets.crosssection import CrossSectionView
 from .widgets.schematic import CircuitEditor
@@ -81,7 +83,8 @@ class NetlistPreview(QWidget):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, model: ProjectModel | None = None, restore_state: bool = True):
+    def __init__(self, model: ProjectModel | None = None, restore_state: bool = True, autosave: bool | None = None,
+                 autosave_dir: Path | None = None):
         super().__init__()
         self.model = model or ProjectModel(default_project())
         self.setWindowTitle(f"CirPlas {__version__}")
@@ -99,6 +102,7 @@ class MainWindow(QMainWindow):
         self.results = ResultsPanel()
         self.sweep = SweepPanel(self.model)
         self.compare = ComparePanel()
+        self.optimize = OptimizePanel(self.model)
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         self.tabs.setProperty("flat", "true")
@@ -107,6 +111,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.netlist, "ネットリスト")
         self.tabs.addTab(self.results, "結果")
         self.tabs.addTab(self.sweep, "スイープ")
+        self.tabs.addTab(self.optimize, "最適化")
         self.tabs.addTab(self.compare, "比較")
         self.sweep.open_result.connect(self._show_results)
         central = QWidget()
@@ -148,6 +153,8 @@ class MainWindow(QMainWindow):
         self._persist_state = restore_state
         if restore_state:
             self._restore_state()
+        # periodic snapshot of unsaved edits (recovered at the next start, see offer_restore)
+        self.autosaver = AutoSaver(self.model, autosave_dir, parent=self) if (restore_state if autosave is None else autosave) else None
 
     # ------------------------------------------------------------------ menus
     def _menus(self) -> None:
@@ -235,7 +242,32 @@ class MainWindow(QMainWindow):
         except Exception:  # noqa: BLE001
             pass
 
+    def offer_restore(self, ask: bool = True) -> bool:
+        """Offer the snapshot left by a previous session (unsaved changes, crash). Returns True if it was restored."""
+        if self.autosaver is None:
+            return False
+        snap = self.autosaver.pending()
+        if snap is None:
+            return False
+        if ask:
+            where = snap.get("path") or "無題のプロジェクト"
+            answer = QMessageBox.question(
+                self, "自動保存からの復元",
+                f"保存されていない変更が見つかりました（{where}、{snap.get('saved_at', '')} の自動保存）。\n復元しますか？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes)
+            if answer != QMessageBox.StandardButton.Yes:
+                self.autosaver.clear()
+                return False
+        self.autosaver.restore(snap)
+        self.statusBar().showMessage("自動保存から復元しました（未保存）", 8000)
+        return True
+
     def closeEvent(self, event) -> None:
+        if self.autosaver is not None:
+            if self.model.dirty:
+                self.autosaver.save_now()  # keep the unsaved edits for the next start
+            else:
+                self.autosaver.clear()
         if self._persist_state:
             s = QSettings()
             s.setValue(GEOMETRY_KEY, self.saveGeometry())
@@ -254,7 +286,7 @@ class MainWindow(QMainWindow):
         for a in self.theme_actions.actions():
             a.setChecked(a.data() == theme.manager().mode)
         self.cross.redraw()
-        for panel in (self.results.radial, self.results.wave, self.results.map, self.results.spectrum, self.compare, self.sweep):
+        for panel in (self.results.radial, self.results.wave, self.results.map, self.results.spectrum, self.compare, self.sweep, self.optimize):
             try:
                 panel.redraw()
             except Exception:  # noqa: BLE001
@@ -323,6 +355,8 @@ class MainWindow(QMainWindow):
             return
         try:
             self.model.save()
+            if self.autosaver is not None:
+                self.autosaver.clear()
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "保存エラー", str(exc))
 
@@ -331,6 +365,8 @@ class MainWindow(QMainWindow):
         if path:
             try:
                 self.model.save(path)
+                if self.autosaver is not None:
+                    self.autosaver.clear()
             except Exception as exc:  # noqa: BLE001
                 QMessageBox.warning(self, "保存エラー", str(exc))
 

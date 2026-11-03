@@ -11,7 +11,8 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QProcess, Qt, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-                               QPushButton, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+                               QListWidget, QListWidgetItem, QPushButton, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout,
+                               QWidget)
 
 from ...core.analysis.sweep import SweepAxis, SweepSpec, get_path
 from .. import theme
@@ -166,8 +167,14 @@ class SweepPanel(QWidget):
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0)
-        self.metric_combo = QComboBox()
-        self.metric_combo.currentIndexChanged.connect(self.redraw)
+        # metrics to plot: several at once in 1D (legend; optionally relative to the first point), the first checked one
+        # as the heatmap in 2D
+        self.metrics = QListWidget()
+        self.metrics.setMaximumHeight(120)
+        self.metrics.itemChanged.connect(lambda _: self.redraw())
+        self.relative = QCheckBox("1D: 複数指標は最初の点に対する比で表示")
+        self.relative.setChecked(True)
+        self.relative.toggled.connect(self.redraw)
         self._fill_metrics([])
         hint = QLabel("点（2D はセル）をクリックするとそのランを結果タブで開きます")
         hint.setProperty("role", "muted")
@@ -175,7 +182,8 @@ class SweepPanel(QWidget):
         self.plot.showGrid(x=True, y=True, alpha=0.3)
         self.plot.scene().sigMouseClicked.connect(self._on_plot_click)
         self.colorbar = None
-        rl.addWidget(self.metric_combo)
+        rl.addWidget(self.metrics)
+        rl.addWidget(self.relative)
         rl.addWidget(self.plot, 1)
         rl.addWidget(hint)
         split.addWidget(self.table)
@@ -288,15 +296,34 @@ class SweepPanel(QWidget):
         self.redraw()
 
     def _fill_metrics(self, keys: list[str]) -> None:
-        current = self.metric_combo.currentData()
-        self.metric_combo.blockSignals(True)
-        self.metric_combo.clear()
+        checked = self.selected_metrics() if self.metrics.count() else []
+        self.metrics.blockSignals(True)
+        self.metrics.clear()
         ordered = [k for k in METRIC_LABELS if k in keys] + [k for k in keys if k not in METRIC_LABELS] if keys else list(METRIC_LABELS)
+        keep = [k for k in checked if k in ordered] or ordered[:1]
         for k in ordered:
-            self.metric_combo.addItem(METRIC_LABELS.get(k, k), k)
-        i = self.metric_combo.findData(current)
-        self.metric_combo.setCurrentIndex(i if i >= 0 else 0)
-        self.metric_combo.blockSignals(False)
+            item = QListWidgetItem(METRIC_LABELS.get(k, k))
+            item.setData(Qt.ItemDataRole.UserRole, k)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if k in keep else Qt.CheckState.Unchecked)
+            self.metrics.addItem(item)
+        self.metrics.blockSignals(False)
+
+    def selected_metrics(self) -> list[str]:
+        return [self.metrics.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.metrics.count())
+                if self.metrics.item(i).checkState() == Qt.CheckState.Checked]
+
+    def set_metrics(self, keys: list[str]) -> None:
+        self.metrics.blockSignals(True)
+        for i in range(self.metrics.count()):
+            it = self.metrics.item(i)
+            it.setCheckState(Qt.CheckState.Checked if it.data(Qt.ItemDataRole.UserRole) in keys else Qt.CheckState.Unchecked)
+        self.metrics.blockSignals(False)
+        self.redraw()
+
+    @staticmethod
+    def metric_label(key: str) -> str:
+        return METRIC_LABELS.get(key, key)
 
     def redraw(self) -> None:
         self.plot.clear()
@@ -308,19 +335,32 @@ class SweepPanel(QWidget):
             self.colorbar = None
         if not self.results:
             return
-        key = self.metric_combo.currentData()
+        keys = self.selected_metrics()
+        if not keys:
+            return
         axes = self.results["spec"]["axes"]
-        runs = [r for r in self.results["runs"] if r.get("ok") and key in r.get("metrics", {})]
         if len(axes) == 1:
-            pts = sorted(((r["values"][axes[0]["path"]], r["metrics"][key], r["output"]) for r in runs), key=lambda t: t[0])
-            if pts:
-                xs, ys = [p[0] for p in pts], [p[1] for p in pts]
-                self.plot.plot(xs, ys, pen=theme.series_pen(1), symbol="o", symbolSize=8, symbolBrush=theme.series(1), symbolPen=theme.series(1))
-                self._points = [{"x": x, "y": y, "output": o} for x, y, o in pts]
+            if self.plot.getPlotItem().legend is None:
+                self.plot.addLegend()
+            relative = self.relative.isChecked() and len(keys) > 1
+            for k, key in enumerate(keys):
+                runs = [r for r in self.results["runs"] if r.get("ok") and key in r.get("metrics", {})]
+                pts = sorted(((r["values"][axes[0]["path"]], r["metrics"][key], r["output"]) for r in runs), key=lambda t: t[0])
+                if not pts:
+                    continue
+                xs, ys = [p[0] for p in pts], np.array([p[1] for p in pts], dtype=float)
+                if relative and ys[0] != 0:
+                    ys = ys / ys[0]
+                self.plot.plot(xs, ys, pen=theme.series_pen(k), symbol="o", symbolSize=7, symbolBrush=theme.series(k),
+                               symbolPen=theme.series(k), name=self.metric_label(key))
+                if not self._points:
+                    self._points = [{"x": x, "output": o} for x, _, o in pts]
             self.plot.setLabel("bottom", axes[0].get("label") or axes[0]["path"])
-            self.plot.setLabel("left", self.metric_combo.currentText())
+            self.plot.setLabel("left", "最初の点に対する比" if relative else (self.metric_label(keys[0]) if len(keys) == 1 else "値"))
             self.plot.setLogMode(x=self._is_log(axes[0]["values"]), y=False)
             return
+        key = keys[0]
+        runs = [r for r in self.results["runs"] if r.get("ok") and key in r.get("metrics", {})]
         self._draw_heatmap(axes, runs, key)
 
     @staticmethod
@@ -361,7 +401,7 @@ class SweepPanel(QWidget):
         mesh = pg.PColorMeshItem(xe[:, None].repeat(len(ye), 1), ye[None, :].repeat(len(xe), 0), img,
                                  colorMap=cmap, levels=(lo, hi), enableAutoLevels=False)
         self.plot.addItem(mesh)
-        self.colorbar = pg.ColorBarItem(values=(lo, hi), colorMap=cmap, interactive=False, label=self.metric_combo.currentText())
+        self.colorbar = pg.ColorBarItem(values=(lo, hi), colorMap=cmap, interactive=False, label=self.metric_label(key))
         self.colorbar.setImageItem(mesh, insert_in=self.plot.getPlotItem())
         self._grid = {"xe": xe, "ye": ye, "outputs": outputs}
         self.plot.setLabel("bottom", ("log10 " if log1 else "") + (axes[0].get("label") or axes[0]["path"]))

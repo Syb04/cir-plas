@@ -18,6 +18,10 @@ from ..elements import CellElements, CircuitModel
 from ..project import PortSpec, Project
 from . import naming as nm
 
+# .options written into every netlist (numerics.ngspice.options overrides or extends them; see _analysis for the reasons
+# behind the scaled absolute tolerances)
+DEFAULT_SPICE_OPTIONS = {"rshunt": "1e12", "reltol": "1e-3", "abstol": "1e-6", "vntol": "1e-5", "chgtol": "1e-12", "itl4": "300", "gmin": "1e-12"}
+
 FORBIDDEN_USER_STATEMENTS = (".tran", ".ac", ".dc", ".op", ".control", ".endc", ".option", ".options", ".include", ".lib", ".save", ".ic", ".end", "shell")
 
 
@@ -541,7 +545,7 @@ class NetlistBuilder:
         # (abstol 1e-12 A, chgtol 1e-14 C) cannot be met in double precision at the first time step of larger meshes
         # (companion conductances ~1e13 S) and make ngspice 42 abort with "timestep too small" although the operating
         # point is fine. abstol = 1e-6 A is 1e-8 of the RF current; itl4 raised as a safety margin.
-        opts = {"rshunt": "1e12", "reltol": "1e-3", "abstol": "1e-6", "vntol": "1e-5", "chgtol": "1e-12", "itl4": "300", "gmin": "1e-12"}
+        opts = dict(DEFAULT_SPICE_OPTIONS)
         if self.mode == "tran":
             opts["method"] = ng.method
             if ng.method == "gear":

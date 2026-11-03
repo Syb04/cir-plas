@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import math
+import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPlainTextEdit, QProgressBar,
                                QPushButton, QSplitter, QVBoxLayout, QWidget)
 
+from ...core.estimate import format_seconds
 from .. import theme
+from ..estimates import EstimateRunner, record_run
 from ..project_model import ProjectModel
 from ..runmanager import RunManager
 
@@ -60,8 +64,22 @@ class RunPanel(QWidget):
         self.progress.setTextVisible(False)
         self.progress.setFixedHeight(6)
         self.progress.setVisible(False)
+        self.eta = QLabel("")
+        self.eta.setProperty("role", "muted")
         lay.addWidget(self.status)
         lay.addWidget(self.progress)
+        lay.addWidget(self.eta)
+        # remaining-time estimate: model-based at the start, refined from the density-iteration progress
+        self.estimator = EstimateRunner(parent=self)
+        self.estimator.ready.connect(self._on_estimate)
+        self._t0: float | None = None
+        self._estimate = None
+        self._expected_s: float | None = None
+        self._run_mode = ""
+        self._density_t: list[tuple[float, float]] = []  # (elapsed, residual) of the density iterations
+        self._tick = QTimer(self)
+        self._tick.setInterval(1000)
+        self._tick.timeout.connect(self._update_eta)
         split = QSplitter(Qt.Orientation.Vertical)
         plot_box = QWidget()
         pl = QVBoxLayout(plot_box)
@@ -131,6 +149,11 @@ class RunPanel(QWidget):
         mode = mode or self.mode.currentData()
         self._reset_curves()
         self.log.clear()
+        self._run_mode, self._t0, self._estimate, self._expected_s, self._density_t = mode, time.monotonic(), None, None, []
+        self._run_data = self.model.data
+        self.estimator.request(self.model.data, immediate=True)
+        self.eta.setText("残り時間: 見積り中…")
+        self._tick.start()
         try:
             self.manager.start(self.model, mode)
         except Exception as exc:  # noqa: BLE001
@@ -143,6 +166,8 @@ class RunPanel(QWidget):
 
     def _on_progress(self, d: dict) -> None:
         stage = d.get("stage")
+        if stage == "density" and self._t0 is not None:
+            self._density_t.append((time.monotonic() - self._t0, max(float(d.get("residual", 1.0)), 1e-12)))
         if stage == "ac":
             self._ac.append(max(float(d.get("change", 0.0)), 1e-9))
             self.curve_ac.setData(list(range(1, len(self._ac) + 1)), self._ac)
@@ -169,7 +194,74 @@ class RunPanel(QWidget):
     def _on_log(self, text: str) -> None:
         self.log.appendPlainText(text)
 
+    # ------------------------------------------------------------------ remaining time
+    def _on_estimate(self, est) -> None:
+        self._estimate = est
+        self._expected_s = est.seconds.get(self._run_mode)
+        self._update_eta()
+
+    def remaining_seconds(self) -> float | None:
+        """Remaining time of the running job [s]; None while unknown."""
+        if self._t0 is None:
+            return None
+        elapsed = time.monotonic() - self._t0
+        if self._run_mode == "sc" and len(self._density_t) >= 2:
+            di = self._run_data["numerics"]["density_iteration"]
+            r_a, r_b = self._density_t[-2][1], self._density_t[-1][1]
+            per_iter = (self._density_t[-1][0] - self._density_t[0][0]) / (len(self._density_t) - 1)
+            rate = r_b / r_a if r_a > 0 else 1.0
+            left = di["max_iter"] - len(self._density_t)
+            if 0 < rate < 0.95 and r_b > di["tol"]:
+                left = min(left, math.ceil(math.log(di["tol"] / r_b) / math.log(rate)))
+            elif r_b <= di["tol"]:
+                left = 0
+            tail = 0.0
+            if di.get("refine_with_tran") and self._estimate is not None:
+                tail = (self._estimate.seconds["tran"]) * (di.get("tran_refine_iter", 1) + 1)
+            return max(left, 0) * per_iter + tail
+        if self._expected_s is None:
+            return None
+        return max(self._expected_s - elapsed, 0.0)
+
+    def _update_eta(self) -> None:
+        if self._t0 is None:
+            return
+        elapsed = time.monotonic() - self._t0
+        rem = self.remaining_seconds()
+        if rem is None:
+            self.eta.setText(f"経過 {elapsed:.0f} 秒")
+            return
+        total = elapsed + rem
+        if rem <= 0:
+            self.eta.setText(f"経過 {elapsed:.0f} 秒（見積り {format_seconds(total)} を超過）")
+        else:
+            self.eta.setText(f"経過 {elapsed:.0f} 秒 / 残り {format_seconds(rem)}")
+        if total > 0:
+            self.progress.setRange(0, 100)
+            self.progress.setValue(int(min(99, 100 * elapsed / total)))
+
+    def _calibrate(self, path: str) -> None:
+        """Feed the wall time of a finished AC/TRAN run back into the cost coefficients."""
+        if self._t0 is None or self._estimate is None or self._run_mode not in ("ac", "tran"):
+            return
+        wall = time.monotonic() - self._t0
+        points = 0
+        if self._run_mode == "tran":
+            try:
+                import json as _json
+
+                import h5py
+
+                with h5py.File(path, "r") as f:
+                    hist = _json.loads(f["tran/history"][()])
+                # every bias / steady-state run starts at t = 0: the simulated periods add up
+                points = int(sum(int(h.get("cycles", 0)) for h in hist) * self._estimate.points_per_period)
+            except Exception:  # noqa: BLE001
+                return
+        record_run(self._run_mode, self._estimate.unknowns, wall, points)
+
     def _on_finished(self, path: str) -> None:
+        self._calibrate(path)
         self._done(f"完了: {Path(path).parent.name}")
         item = QListWidgetItem(f"{Path(path).parent.name}")
         item.setData(Qt.ItemDataRole.UserRole, path)
@@ -180,6 +272,11 @@ class RunPanel(QWidget):
         self._done("失敗: " + msg)
 
     def _done(self, text: str) -> None:
+        self._tick.stop()
+        if self._t0 is not None:
+            self.eta.setText(f"所要 {time.monotonic() - self._t0:.0f} 秒")
+        self._t0 = None
+        self.progress.setRange(0, 0)
         self.btn_run.setEnabled(True)
         self.btn_cancel.setEnabled(False)
         self.progress.setVisible(False)

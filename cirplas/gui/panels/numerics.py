@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
-from PySide6.QtWidgets import QFormLayout, QSpinBox, QVBoxLayout, QWidget, QComboBox, QDoubleSpinBox
+from PySide6.QtWidgets import (QComboBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QPushButton, QSpinBox,
+                               QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
+from ...core.estimate import format_seconds
+from ...core.netlist.builder import DEFAULT_SPICE_OPTIONS
+from ...core.project import NgspiceSpec
+from ..estimates import EstimateRunner
 from ..project_model import ProjectModel
 from ..widgets.paramform import BoundForm, group
 
@@ -40,8 +45,6 @@ class MeshPerRegion(QWidget):
                 g.valueChanged.connect(lambda v, nm=name: self._set("grading", nm, float(v)))
                 r.currentIndexChanged.connect(lambda i, nm=name, w=r: self._set("refine", nm, w.itemData(i)))
                 row = QWidget()
-                from PySide6.QtWidgets import QHBoxLayout
-
                 hl = QHBoxLayout(row)
                 hl.setContentsMargins(0, 0, 0, 0)
                 hl.addWidget(n)
@@ -67,6 +70,132 @@ class MeshPerRegion(QWidget):
         d = dict(self.model.get(f"numerics.mesh.{key}", {}))
         d[name] = value
         self.model.set(f"numerics.mesh.{key}", d)
+
+
+class SpiceOptionsEditor(QWidget):
+    """User overrides of the ngspice .options (numerics.ngspice.options) and a reset of the ngspice settings."""
+
+    def __init__(self, model: ProjectModel, parent=None):
+        super().__init__(parent)
+        self.model = model
+        self._blocked = False
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        defaults = QLabel("既定: " + " ".join(f"{k}={v}" for k, v in DEFAULT_SPICE_OPTIONS.items()))
+        defaults.setWordWrap(True)
+        defaults.setProperty("role", "muted")
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["オプション", "値"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setMinimumHeight(110)
+        self.table.itemChanged.connect(self._commit)
+        btns = QHBoxLayout()
+        b_add = QPushButton("追加")
+        b_del = QPushButton("削除")
+        b_reset = QPushButton("既定値に戻す")
+        b_reset.setToolTip("上書きオプションを消し、積分法・KLU・バックエンドも既定値に戻します")
+        b_add.clicked.connect(self._add)
+        b_del.clicked.connect(self._remove)
+        b_reset.clicked.connect(self.reset)
+        btns.addWidget(b_add)
+        btns.addWidget(b_del)
+        btns.addStretch(1)
+        btns.addWidget(b_reset)
+        lay.addWidget(defaults)
+        lay.addWidget(self.table)
+        lay.addLayout(btns)
+        model.changed.connect(self.refresh)
+        self.refresh()
+
+    def refresh(self) -> None:
+        opts = self.model.get("numerics.ngspice.options", {}) or {}
+        self._blocked = True
+        self.table.setRowCount(len(opts))
+        for i, (k, v) in enumerate(opts.items()):
+            self.table.setItem(i, 0, QTableWidgetItem(str(k)))
+            self.table.setItem(i, 1, QTableWidgetItem(str(v)))
+        self._blocked = False
+
+    @staticmethod
+    def _parse(text: str):
+        for conv in (int, float):
+            try:
+                return conv(text)
+            except ValueError:
+                pass
+        return text
+
+    def _rows(self) -> dict:
+        out = {}
+        for i in range(self.table.rowCount()):
+            k = (self.table.item(i, 0).text() if self.table.item(i, 0) else "").strip()
+            v = (self.table.item(i, 1).text() if self.table.item(i, 1) else "").strip()
+            if k and v:
+                out[k] = self._parse(v)
+        return out
+
+    def _commit(self, *_) -> None:
+        if not self._blocked:
+            self.model.set("numerics.ngspice.options", self._rows())
+
+    def _add(self) -> None:
+        self._blocked = True
+        r = self.table.rowCount()
+        self.table.insertRow(r)
+        self.table.setItem(r, 0, QTableWidgetItem("reltol"))
+        self.table.setItem(r, 1, QTableWidgetItem(""))
+        self._blocked = False
+        self.table.editItem(self.table.item(r, 1))
+
+    def _remove(self) -> None:
+        rows = sorted({i.row() for i in self.table.selectedItems()}, reverse=True)
+        for r in rows:
+            self.table.removeRow(r)
+        self._commit()
+
+    def reset(self) -> None:
+        spec = NgspiceSpec().model_dump(mode="json")
+        # keep paths to the ngspice installation (machine-specific, not a numerical setting)
+        for key in ("library_path", "executable"):
+            spec[key] = self.model.get(f"numerics.ngspice.{key}")
+        self.model.set("numerics.ngspice", spec)
+
+
+class EstimateView(QWidget):
+    """Problem size and estimated run times (calibrated from the finished runs on this machine)."""
+
+    def __init__(self, model: ProjectModel, parent=None):
+        super().__init__(parent)
+        self.model = model
+        form = QFormLayout(self)
+        self.size = QLabel("-")
+        self.times = QLabel("-")
+        self.times.setWordWrap(True)
+        self.note = QLabel("計算時間は直近のランから較正した係数による目安です")
+        self.note.setProperty("role", "muted")
+        self.note.setWordWrap(True)
+        form.addRow("未知数", self.size)
+        form.addRow("推定計算時間", self.times)
+        form.addRow(self.note)
+        self.runner = EstimateRunner(parent=self)
+        self.runner.ready.connect(self._show)
+        self.runner.failed.connect(lambda msg: self.times.setText("見積りできません: " + msg.splitlines()[0][:80]))
+        model.changed.connect(self.refresh)
+        self.refresh()
+
+    def refresh(self) -> None:
+        if self.model.is_valid:
+            self.times.setText("計算中…")
+            self.runner.request(self.model.data)
+        else:
+            self.size.setText("-")
+            self.times.setText("プロジェクトに検証エラーがあります")
+
+    def _show(self, est) -> None:
+        self.size.setText(f"{est.unknowns:,}（径方向 {est.cells} セル × バルク {est.layers} 層）")
+        self.times.setText(f"AC {format_seconds(est.seconds['ac'])} / TRAN {format_seconds(est.seconds['tran'])} / "
+                           f"SC {format_seconds(est.seconds['sc'])}")
 
 
 class NumericsPanel(QWidget):
@@ -104,4 +233,7 @@ class NumericsPanel(QWidget):
         n.add_bool("KLU ソルバ", "numerics.ngspice.use_klu")
         n.add_choice("バックエンド", "numerics.ngspice.backend", [("auto", "自動"), ("shared", "共有ライブラリ"), ("batch", "バッチ実行")])
         lay.addWidget(group("ngspice", n))
+        lay.addWidget(group("ngspice オプションの上書き", SpiceOptionsEditor(model)))
+        self.estimate = EstimateView(model)
+        lay.addWidget(group("見積り", self.estimate))
         lay.addStretch(1)

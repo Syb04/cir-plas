@@ -74,6 +74,11 @@ class OptimizeResult:
     history: list[dict]
     evaluations: int
     metrics: dict[str, float]
+    cancelled: bool = False
+
+
+class _Cancelled(Exception):
+    pass
 
 
 def apply_values(base: Project, spec: OptimizeSpec, x: list[float]) -> Project:
@@ -151,30 +156,38 @@ def optimize(ctx: RunContext, spec: OptimizeSpec, on_eval: Optional[Callable[[di
         rec = {"values": {prm.path: v for prm, v in zip(spec.params, x)}, "objective": val, "metrics": m}
         history.append(rec)
         cache[key] = val
-        ctx.progress({"stage": "optimize", "evaluation": len(history), "objective": val, "values": rec["values"]})
+        ctx.progress({"stage": "optimize", "evaluation": len(history), "objective": val, "values": rec["values"],
+                      "metrics": {k: v for k, v in m.items() if isinstance(v, (int, float))}, "error": m.get("error", "")})
         ctx.log(f"optimize eval {len(history)}: {spec.objective}={val:.4g} at {rec['values']}")
         if on_eval:
             on_eval(rec)
         if ctx.cancel():
-            raise KeyboardInterrupt("cancelled")
+            raise _Cancelled
         return val
 
     n = len(spec.params)
     grid = np.linspace(0.0, 1.0, max(spec.grid, 2))
-    best_u, best_v = None, float("inf")
-    for u in itertools.product(grid, repeat=n):
-        v = f(np.array(u))
-        if v < best_v:
-            best_u, best_v = np.array(u), v
-    if best_u is None or not math.isfinite(best_v):
-        raise RuntimeError("no feasible point in the parameter box")
-    h = 1.0 / (len(grid) - 1)
-    if n == 1:
-        lo, hi = max(0.0, best_u[0] - h), min(1.0, best_u[0] + h)
-        minimize_scalar(lambda u: f(np.array([u])), bounds=(lo, hi), method="bounded", options={"xatol": spec.tol, "maxiter": spec.max_eval})
-    else:
-        minimize(f, best_u, method="Powell", bounds=[(0.0, 1.0)] * n, options={"xtol": spec.tol, "maxfev": spec.max_eval})
-    best = min(history, key=lambda r: r["objective"])
+    cancelled = False
+    try:
+        best_u, best_v = None, float("inf")
+        for u in itertools.product(grid, repeat=n):
+            v = f(np.array(u))
+            if v < best_v:
+                best_u, best_v = np.array(u), v
+        if best_u is None or not math.isfinite(best_v):
+            raise RuntimeError("no feasible point in the parameter box")
+        h = 1.0 / (len(grid) - 1)
+        if n == 1:
+            lo, hi = max(0.0, best_u[0] - h), min(1.0, best_u[0] + h)
+            minimize_scalar(lambda u: f(np.array([u])), bounds=(lo, hi), method="bounded", options={"xatol": spec.tol, "maxiter": spec.max_eval})
+        else:
+            minimize(f, best_u, method="Powell", bounds=[(0.0, 1.0)] * n, options={"xtol": spec.tol, "maxfev": spec.max_eval})
+    except _Cancelled:
+        cancelled = True  # report the best point evaluated so far
+    feasible = [r for r in history if math.isfinite(r["objective"])]
+    if not feasible:
+        raise RuntimeError("cancelled before a feasible point was evaluated" if cancelled else "no feasible point in the parameter box")
+    best = min(feasible, key=lambda r: r["objective"])
     x = [best["values"][prm.path] for prm in spec.params]
     return OptimizeResult(values=best["values"], objective=best["objective"], project=apply_values(base, spec, x), history=history,
-                          evaluations=len(history), metrics=best["metrics"])
+                          evaluations=len(history), metrics=best["metrics"], cancelled=cancelled)
