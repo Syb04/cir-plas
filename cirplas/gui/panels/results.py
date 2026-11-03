@@ -10,8 +10,9 @@ from PySide6.QtWidgets import (QCheckBox, QHBoxLayout, QHeaderView, QLabel, QLis
                                QVBoxLayout, QWidget)
 
 from .. import theme
+from ...core.result_data import result_warnings
 from ..results_io import ResultData
-from .results_extra import DensityView, EdgeView, MapView, SpectrumView
+from .results_extra import DensityView, EdgeView, IedfView, MapView, SpectrumView
 
 RADIAL_QUANTITIES = [
     # key, label, unit, scale, which (tran/ac/both)
@@ -28,7 +29,7 @@ RADIAL_QUANTITIES = [
     ("s_b_max", "下部シース厚（最大）", "mm", 1e3, "tran"),
     ("j_z_1", "軸方向電流密度 基本波", "A/m²", 1.0, "tran"),
     ("e_ion_mean", "イオン平均エネルギー（下部）", "eV", 1.0, "tran"),
-    ("e_ion_width", "IEDF 幅の推定（下部）", "eV", 1.0, "tran"),
+    ("e_ion_width", "IEDF ピーク間隔（下部）", "eV", 1.0, "tran"),
     ("|vsh_b|", "下部シース電圧 |V|（AC）", "V", 1.0, "ac"),
     ("|vsh_t|", "上部シース電圧 |V|（AC）", "V", 1.0, "ac"),
     ("|j_z|", "軸方向電流密度 |J|（AC）", "A/m²", 1.0, "ac"),
@@ -234,18 +235,7 @@ class OverviewTable(QTableWidget):
 
     @staticmethod
     def warnings(data: ResultData) -> list[str]:
-        """Warning badges of the overview (spec 04 section 8)."""
-        out = []
-        if data.tran is not None:
-            a, m = data.tran["attrs"], data.tran["metrics"]
-            pbe = abs(float(m.get("power_balance_error", 0)))
-            if pbe > 0.01:
-                out.append(f"電力収支誤差 {pbe * 100:.2f} % > 1 %")
-            if not bool(a.get("pss_converged", True)):
-                out.append("周期定常に未達（cycles_max に到達）")
-        if data.iteration is not None and not bool(data.iteration["attrs"].get("converged", True)):
-            out.append("密度反復が未収束（緩和係数を下げるか最大反復を増やしてください）")
-        return out
+        return result_warnings(data)
 
     @staticmethod
     def _uniformity(data: ResultData, y) -> str:
@@ -272,12 +262,14 @@ class ResultsPanel(QWidget):
         self.edge = EdgeView()
         self.spectrum = SpectrumView()
         self.density = DensityView()
+        self.iedf = IedfView()
         self.tabs.addTab(self.overview, "概要")
         self.tabs.addTab(self.radial, "径方向プロファイル")
         self.tabs.addTab(self.map, "2D マップ")
         self.tabs.addTab(self.wave, "波形")
         self.tabs.addTab(self.spectrum, "スペクトル")
         self.tabs.addTab(self.edge, "エッジ")
+        self.tabs.addTab(self.iedf, "IEDF")
         self.tabs.addTab(self.density, "密度")
         lay.addWidget(self.label)
         lay.addWidget(self.tabs, 1)
@@ -292,4 +284,5 @@ class ResultsPanel(QWidget):
         self.wave.set_data(self.data)
         self.spectrum.set_data(self.data)
         self.edge.set_data(self.data)
+        self.iedf.set_data(self.data)
         self.density.set_data(self.data)

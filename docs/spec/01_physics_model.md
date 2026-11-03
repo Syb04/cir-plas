@@ -138,6 +138,10 @@ $$Q(V) = \frac{\varepsilon_0 A_i\, T_e^{\beta}}{s_1 (1-\beta)}\,(V + V_{min})^{1
 |---|---|---|---|
 | matrix（一様イオン密度） | $1/2$ | $\sqrt{2}\,\lambda_D$ | $Q = A_i\sqrt{2\varepsilon_0 e n_s (V+V_{min})}$。Lieberman 均質モデルと整合 |
 | Child–Langmuir | $3/4$ | $(2^{5/4}/3)\,\lambda_D$ | $s = \tfrac{\sqrt2}{3}\lambda_D (2V/T_e)^{3/4}$（L&L 6.3） |
+| 衝突性 Child 則（`collisional`） | $3/5$ | $(1.68\sqrt{2/\pi})^{2/5}\lambda_D^{4/5}\lambda_i^{1/5}$ | 移動度律速 $J_i = 1.68\,\varepsilon_0 (2e\lambda_i/\pi M)^{1/2} V^{3/2}/s^{5/2}$（L&L 6.3.23）を $V = T_e$ で Bohm 流束に一致させた幅。$\lambda_i < s$ の高圧側 |
+
+`auto` は Child 則の幅（$V = 50\,T_e$）と $\lambda_i$ を比べ、$\lambda_i$ が短ければ `collisional`、そうでなければ `child` をセルごとに選びます。
+いずれのモデルも $s_1$ と $\beta$ だけが異なり、電荷 $Q(V)$・最小幅・ネットリストの形は共通です（実装時の知見：単セル対称の V1 波形基準は 3 モデルとも成立）。
 
 ここで $\lambda_D = \sqrt{\varepsilon_0 T_e/(e n_s)}$。$V_{min}$ は最小シース幅 $s_{min} = \alpha_{min}\lambda_D$（$\alpha_{min}$ デフォルト 2）に対応する電圧で、
 $s(V_{min}) = s_{min}$ から決めます（matrix では $V_{min} = \alpha_{min}^2 T_e/2$）。
@@ -310,6 +314,10 @@ $$K_{iz}(T_e)\, n_g\, d_{eff} = u_B, \qquad d_{eff} = \frac{1}{2}\frac{R\, l_p}{
 
   （L&L 10.2、$h_R = 0.80 (4 + R/\lambda_i)^{-1/2}$）。
 - Ar の反応速度係数は L&L Table 3.3 の Arrhenius 形（$K_{iz}, K_{ex}, K_{el}$）をデフォルトデータとし、他ガスはデータファイルで追加します。
+  `plasma.gas` には同梱ガス名か、同じスキーマのガス JSON のパスを指定できます。各係数は `arrhenius_power`、`table`（$T_e$–$K$ の表、両対数補間）、
+  `cross_section`（断面積の表をマクスウェル分布で積分：$K = (2/\sqrt\pi) T_e^{-3/2}\sqrt{2e/m_e}\int \sigma(E) E e^{-E/T_e} dE$、
+  読み込み時に 0.2〜50 eV の表へ変換。CSV ファイル（E [eV], σ [m²]）または配列で与え、LXCat の書き出しをそのまま使える）。
+  モデルは電気的陽性（正イオン 1 種、付着なし）なので、負イオンを含むガス（`electronegative: true` または `K_att`）は読み込み時に拒否します。
 
 ### 8.2 Level 1：自己無撞着（Phase 2）
 
@@ -344,7 +352,7 @@ $$-\frac{1}{r}\frac{\mathrm{d}}{\mathrm{d}r}\left(r D_a \frac{\mathrm{d}n}{\math
 | 量 | 定義 |
 |---|---|
 | DC シース電圧 $\langle V_{sh}\rangle(r)$ | 測定窓での時間平均。イオン衝突エネルギーの推定値 $E_i \approx e\langle V_{sh}\rangle$（無衝突） |
-| RF 変調幅（オプション） | $\Delta E \approx \dfrac{2 e V_{sh,1}}{\omega \tau_i}$ 型の近似（$\tau_i$：イオン通過時間）から bimodal 幅を推定 |
+| IEDF（下部表面） | 減衰電位モデル（Miller & Riley 1997）：$\tau_i\, \mathrm{d}V_{eff}/\mathrm{d}t = V_{sh}(t) - V_{eff}$、$\tau_i = 3\bar s\sqrt{M/(2e\langle V_{sh}\rangle)}$。周期定常では基本周期の第 $n$ 高調波に $1/(1 + jn\omega_0\tau_i)$ を掛けた $V_{eff}(t)$ の、位相一様な分布が IEDF（多周波でも同じ）。ピーク間隔 $\approx 2eV_{sh,1}/\sqrt{1+(\omega\tau_i)^2}$。シース内衝突は解かず、無衝突で通過する割合 $\exp(-\bar s/\lambda_i)$ を併記 |
 | シース厚 $\bar s(r), s_{max}(r)$ | $s(V(t))$ の時間平均と最大 |
 | シース境界プロファイル | $z_s(r) = z_{surf}(r) + \bar s(r)$、傾き角 $\theta(r) = \arctan(\mathrm{d}z_s/\mathrm{d}r)$（ウェハエッジ近傍の評価指標） |
 | イオン流束 $\Gamma_i(r)$ | $n_s(r) u_B$（Level 1 では分布が得られる） |
@@ -369,7 +377,7 @@ $$\lambda_{eff} \approx \lambda_0 \sqrt{\frac{s_{tot}}{l}}\;\sqrt{1 - \frac{\ome
 
 1. 軸対称、TM モードのみ。
 2. イオン密度は RF 周期内で一定。密度は軸方向一様（$h_l$ で端を補正）。
-3. シースは準静的（$s(V)$ の瞬時関係）。イオンのシース通過時間効果は IEDF 推定でのみ考慮。
+3. シースは準静的（$s(V)$ の瞬時関係）。イオンのシース通過時間効果は IEDF（減衰電位モデル）でのみ考慮。
 4. 電子はマクスウェル分布、$T_e$ は空間一様。
 5. 磁束チェーンの高さは公称値（シース厚の時間変動は磁束計算では無視）。
 6. 誘電体・半導体層は線形（$\varepsilon_r, \sigma$ 一定）。

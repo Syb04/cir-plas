@@ -25,6 +25,10 @@
   4. **電力収支誤差** < 1 %（ブロッキング容量の DC 充電電力 $-V_{dc} I_{dc}$ を差し引いた値）。
   5. 確率的加熱 $\langle I_C^2\rangle R_{stoc}$ が正。
 
+- 追加（M6）：項目 2・3 を matrix / Child–Langmuir / 衝突性 Child 則の 3 モデルで実行（項目 2 の比は $p = 1/(1-\beta)$ として
+  $\langle (Q_0 + q_1\cos)^p\rangle/(Q_0+q_1)^p$、許容値は matrix 0.02、Child 系 0.015）。IEDF は 2 MHz と 27 MHz で平均が $e\langle V_{sh}\rangle$ の 3 % 以内、
+  ピーク間隔が $2V_{sh,1}/\sqrt{1+(\omega\tau_i)^2}$ の 5 % 以内（Ar では 2 MHz でも $\omega\tau_i \approx 3.7$）。
+
 ### V2 線形定在波（径方向伝送線路との比較）
 
 - 設定：一体電極（ウェハ領域が全半径）、上部接地、外周 short、一様 $n$、AC モード、シースは線形容量（固定 $\bar s$ = 1 mm 上下）、$N_z = 1$、60 / 100 MHz、$R$ = 150 / 225 mm、$l$ = 30 mm。

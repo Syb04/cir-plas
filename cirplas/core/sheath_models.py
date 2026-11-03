@@ -17,17 +17,31 @@ from .plasma import bohm_speed, debye_length, electron_mean_speed
 from .project import SheathSpec
 
 
-def s1_factor(model: str) -> float:
-    """Sheath width at V = Te in units of the Debye length."""
+# collisional (mobility-limited) Child law, L&L eq. 6.3.23: J_i = 1.68 eps0 (2 e lambda_i/(pi M))^(1/2) V^(3/2) / s^(5/2)
+COLLISIONAL_CHILD_COEF = 1.68
+
+
+def s1_factor(model: str, lambda_d: float = 1.0, lambda_i: float | None = None) -> float:
+    """Sheath width at V = Te in units of the Debye length.
+
+    For the collisional law the width depends on the ion mean free path: equating the Bohm flux e n_s u_B with the
+    mobility-limited Child current at V = Te gives s1^(5/2) = 1.68 sqrt(2/pi) lambda_D^2 lambda_i^(1/2), i.e.
+    s1/lambda_D = (1.68 sqrt(2/pi))^(2/5) (lambda_i/lambda_D)^(1/5)."""
     if model == "matrix":
         return math.sqrt(2.0)
     if model == "child":
         return 2.0**1.25 / 3.0
+    if model == "collisional":
+        if lambda_i is None:
+            raise ValueError("the collisional sheath needs the ion mean free path")
+        return (COLLISIONAL_CHILD_COEF * math.sqrt(2.0 / math.pi)) ** 0.4 * (lambda_i / lambda_d) ** 0.2
     raise ValueError(f"unknown sheath model '{model}'")
 
 
 def beta_of(model: str) -> float:
-    return {"matrix": 0.5, "child": 0.75}[model]
+    """Exponent of s(V) = s1 (V/Te)^beta."""
+    return {"matrix": 0.5, "child": 0.75, "collisional": 0.6}[model]
+
 
 
 @dataclass(frozen=True)
@@ -110,10 +124,19 @@ def electron_saturation_current(ns: float, te: float, area: float) -> float:
     return 0.25 * E_CHARGE * ns * electron_mean_speed(te) * area
 
 
-def make_sheath_params(area: float, ns: float, te: float, mass_kg: float, spec: SheathSpec) -> SheathCellParams:
-    beta = beta_of(spec.model)
+def make_sheath_params(area: float, ns: float, te: float, mass_kg: float, spec: SheathSpec, lambda_i: float | None = None,
+                       v_typical: float | None = None) -> SheathCellParams:
+    """Element parameters of one sheath. lambda_i is needed by the collisional law (and by `auto`, which compares it with
+    the Child-law width at v_typical, default 50 Te)."""
     lam_d = debye_length(te, ns)
-    s1 = s1_factor(spec.model) * lam_d
+    model = spec.model
+    if model == "auto":
+        if lambda_i is None:
+            raise ValueError("sheath model 'auto' needs the ion mean free path")
+        s_typ = s1_factor("child") * lam_d * ((v_typical or 50.0 * te) / te) ** beta_of("child")
+        model = "collisional" if lambda_i < s_typ else "child"
+    beta = beta_of(model)
+    s1 = s1_factor(model, lam_d, lambda_i) * lam_d
     s_min = spec.alpha_min * lam_d
     vmin = te * (s_min / s1) ** (1.0 / beta)
     kq = EPS0 * area * te**beta / (s1 * (1.0 - beta))
@@ -131,5 +154,5 @@ def make_sheath_params(area: float, ns: float, te: float, mass_kg: float, spec: 
         ii=ion_current(ns, te, mass_kg, area),
         ie0=electron_saturation_current(ns, te, area),
         nd=te / VT_27C,
-        model=spec.model,
+        model=model,
     )

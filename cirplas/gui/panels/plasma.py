@@ -18,7 +18,7 @@ class PlasmaPanel(QWidget):
         self.model = model
         lay = QVBoxLayout(self)
         f = BoundForm(model)
-        f.add_choice("ガス", "plasma.gas", [("ar", "Ar")])
+        f.add_text("ガス", "plasma.gas", "同梱ガス名（ar）またはガスデータ JSON のパス（反応速度係数の表・断面積から計算、01 §8.1）")
         f.add_float("圧力", "plasma.pressure_pa", "mTorr", 1.0 / MTORR)
         f.add_float("ガス温度", "plasma.gas_temperature_k", "K")
         lay.addWidget(group("ガス", f))
@@ -34,7 +34,8 @@ class PlasmaPanel(QWidget):
         d.add_float("ν_m（手動）", "plasma.nu_m.value", "1/s")
         lay.addWidget(group("電子密度・温度", d))
         s = BoundForm(model)
-        s.add_choice("シースモデル", "plasma.sheath.model", [("matrix", "matrix（一様イオン）"), ("child", "Child–Langmuir")])
+        s.add_choice("シースモデル", "plasma.sheath.model", [("matrix", "matrix（一様イオン）"), ("child", "Child–Langmuir（無衝突）"),
+                                                                  ("collisional", "衝突性 Child 則（s ∝ V^3/5 λ_i^1/5）"), ("auto", "自動（λ_i と幅で選択）")])
         s.add_float("最小シース幅 α_min", "plasma.sheath.alpha_min", "λ_D")
         s.add_choice("確率的加熱", "plasma.sheath.stochastic.model", [("hardwall", "hard-wall"), ("off", "オフ")])
         s.add_float("κ_stoc", "plasma.sheath.stochastic.kappa")

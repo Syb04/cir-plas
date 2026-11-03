@@ -114,8 +114,8 @@ def build_circuit_model(project: Project, mesh: Mesh, plasma: PlasmaState, v1_b,
         bottom = [layer_rc(L.material, L.t, c.area) for L in c.bottom_layers]
         top = [layer_rc(L.material, L.t, c.area) for L in c.top_layers]
         bulk = [drude_segment(n0, plasma.nu_m, float(dz), c.area) for dz in c.bulk_thickness]
-        sh_b = make_sheath_params(c.area, ns, plasma.te, mass, spec)
-        sh_t = make_sheath_params(c.area, ns, plasma.te, mass, spec)
+        sh_b = make_sheath_params(c.area, ns, plasma.te, mass, spec, plasma.lambda_i)
+        sh_t = make_sheath_params(c.area, ns, plasma.te, mass, spec, plasma.lambda_i)
         cells.append(CellElements(c, n0, ns, bottom, sh_b, bulk, sh_t, top, float(v1_b[i]), float(v1_t[i]), spec.linear_fixed_width))
 
     boundaries: list[BoundaryElements] = []

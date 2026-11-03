@@ -121,6 +121,10 @@ def write_results(path: str | Path, project: Project, ac: Optional[AcResult] = N
                 _write_scalar_attrs(gp, asdict(pr))
             _write_scalar_attrs(g.require_group("metrics"), {"p_source_total": po.p_source_total, "p_total_dissipated": po.p_total_dissipated,
                                                                 "power_balance_error": po.power_balance_error, "p_ohm_radial_total": po.p_ohm_radial_total})
+            if po.iedf is not None:
+                gi = g.require_group("iedf")
+                for k in ("energy", "f", "collisionless_fraction", "peak_low", "peak_high"):
+                    gi.create_dataset(k, data=np.asarray(getattr(po.iedf, k)))
             if po.maps:
                 gm = g.require_group("map")
                 for k, v in po.maps.items():

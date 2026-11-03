@@ -18,8 +18,17 @@ from ..core.project import Project, load_project
 from ..core.results import write_results
 
 
+SUBCOMMANDS = {"sweep": "sweep_cli", "optimize": "optimize_cli", "report": "report_cli"}
+
+
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="cirplas-solve", description="CirPlas solver worker")
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # the frozen bundle ships one console executable: `cirplas-solve sweep|optimize|report ...` dispatches to the tools
+    if argv and argv[0] in SUBCOMMANDS:
+        import importlib
+
+        return importlib.import_module(f"cirplas.worker.{SUBCOMMANDS[argv[0]]}").main(argv[1:])
+    ap = argparse.ArgumentParser(prog="cirplas-solve", description="CirPlas solver worker (subcommands: sweep, optimize, report)")
     ap.add_argument("project", help="project JSON file")
     ap.add_argument("-o", "--output", default=None, help="output HDF5 file (default: <project>.h5)")
     ap.add_argument("--mode", choices=["ac", "tran", "sc"], default=None, help="override numerics.analysis")

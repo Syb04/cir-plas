@@ -18,6 +18,11 @@ python -m venv .venv && .venv/bin/pip install -e ".[gui,dev,gui-dev]"
 .venv/bin/cirplas-solve project.cirplas.json -o run.h5 --mode tran   # コマンドライン
 .venv/bin/cirplas-sweep project.cirplas.json --param circuit.ports.W.sources.0.v --values 200,300,400 --mode ac -o sweep_out
 # 2D スイープ（直積）：--param/--values を 2 組
+# FR 調整の自動探索（独立 FR 電源の振幅で段差を最小化）
+.venv/bin/cirplas-optimize project.cirplas.json --param circuit.ports.F.sources.0.v:200:800 --objective fr_step -o best.cirplas.json --history opt.json
+# HTML レポート
+.venv/bin/cirplas-report run.h5 -o report.html
+# インストーラ版はコンソール実行ファイル 1 つ：cirplas-solve sweep|optimize|report ... で同じ機能を呼べます
 .venv/bin/cirplas-sweep project.cirplas.json --param circuit.ports.W.sources.0.v --values 150,250 --param plasma.pressure_pa --values 4,8,12 --mode sc -o sweep2d
 ```
 
@@ -84,11 +89,13 @@ python -m venv .venv && .venv/bin/pip install -e ".[gui,dev,gui-dev]"
 | シースモデル | プラズマ | matrix（既定）または Child–Langmuir。`alpha_min` は最小シース幅（デバイ長単位） |
 | 電源 | 回路 / 回路図 | 周波数・振幅・位相の表。複数行で多周波。「電力指定」列に W を入れると供給電力一定になるよう振幅を反復します |
 | 発振器と整合器 | 回路 / 回路図 | 50 Ω 発振器＋L 型または π 型（C1-L-C2）整合器を挿入。自動チューニングでは AC 解のポートインピーダンスから L/C を設計します。π 型は負荷 Q を指定可（空欄で最小） |
+| ガス | プラズマ | 同梱ガス名（`ar`）またはガスデータ JSON のパス。反応速度係数は Arrhenius 式・表・断面積（CSV、LXCat の書き出し可）で与えられます。負イオンを含むガスは扱えません |
+| シースモデル（詳細） | プラズマ | matrix / Child–Langmuir / 衝突性 Child 則（高圧で $\lambda_i$ < シース幅のとき）/ 自動 |
 | 密度反復（SC） | 数値設定 | 緩和係数（自動調整の初期値）、許容値、最大反復、TRAN で確定・補正とその回数 |
 | FR への給電 | 回路 / 回路図 | `esc_coupled`（既定）/ `separate`（独立電極ポート F と調整回路）。回路図の「構成」から切り替えると領域の導体・ポートも自動で整えます |
 | 外部回路（回路図） | 回路図 | 部品の配置とワイヤ配線で任意の外部回路を作成（`circuit.mode = "schematic"`、`circuit.schematic`） |
 | メッシュ | 数値設定 | 領域ごとの分割数と細密化、バルク層数 `N_z`（表皮効果を見るなら 4 以上） |
-| 周期数・測定窓 | 数値設定 | 周期定常判定が未達なら周期数が自動で延長されます（最大周期数まで） |
+| 周期数・測定窓 | 数値設定 | 周期定常判定が未達なら周期数が自動で延長されます（最大周期数まで）。共有ライブラリでは定常に達した周期で計算を打ち切り、コンソール版では収束の速さから必要な周期数を見積もって延長します |
 
 ## 5. 結果の読み方
 
@@ -98,7 +105,11 @@ python -m venv .venv && .venv/bin/pip install -e ".[gui,dev,gui-dev]"
 - **警告**：電力収支誤差 > 1 %、周期定常未達、密度反復未収束は概要タブの先頭に「⚠ 警告」として表示されます。
 - **2D マップ**：$N_z>1$ のときのオーミック加熱密度と電流密度の $(r,z)$ 分布。径方向電流は中央面に対して反対称（表皮層で逆向き）になります。
 - **エッジ**：ウェハ端 ±40 mm のシース境界プロファイルと傾き、シース電圧。
-- **イオンエネルギー**：径方向プロファイルの「イオン平均エネルギー」「IEDF 幅の推定」は、無衝突シースの平均エネルギー $e\langle V_{sh}\rangle$ と、RF 変調によるバイモーダル幅の近似（イオン通過時間 $\tau_i = 3\bar s\sqrt{M/(2e\langle V_{sh}\rangle)}$）です。
+- **IEDF**：結果の「IEDF」タブに下部表面のイオンエネルギー分布をセルごとに表示します（既定は中心・中間・ウェハ端・外周）。
+  イオンはシース電圧に通過時間 $\tau_i = 3\bar s\sqrt{M/(2e\langle V_{sh}\rangle)}$ の 1 次遅れで応答するとした減衰電位モデルで、
+  低周波ほど二山（バイモーダル）が広がります。シース内での衝突は扱わず、無衝突で通過する割合 $\exp(-\bar s/\lambda_i)$ を併記します。
+  径方向プロファイルの「IEDF ピーク間隔」はその分布の幅です。
+- **レポート**：「ファイル → レポートを出力」（Ctrl+E）で、表示中の結果を 1 枚の HTML（図・表・入力条件入り）に書き出します。
 
 ## 6. トラブルシューティング
 

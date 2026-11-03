@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import time
 from pathlib import Path
 
@@ -208,11 +207,7 @@ class SweepPanel(QWidget):
         (self.outdir / "sweep.json").write_text(spec.to_json(), encoding="utf-8")
         self.cancel_file = self.outdir / "CANCEL"
         program, prefix = worker_command()
-        if prefix:
-            prefix = ["-m", "cirplas.worker.sweep_cli"]
-        else:
-            program = str(Path(program).with_name("cirplas-sweep.exe" if sys.platform.startswith("win") else "cirplas-sweep"))
-        args = prefix + [str(proj_path), "--sweep", str(self.outdir / "sweep.json"), "-o", str(self.outdir), "--jobs", str(self.jobs.value()),
+        args = prefix + ["sweep"] + [str(proj_path), "--sweep", str(self.outdir / "sweep.json"), "-o", str(self.outdir), "--jobs", str(self.jobs.value()),
                          "--progress", "jsonl", "--cancel-file", str(self.cancel_file)]
         self.proc = QProcess(self)
         self.proc.setProgram(program)

@@ -23,10 +23,10 @@ import numpy as np
 from ..elements import CircuitModel
 from ..netlist.builder import NetlistBuilder, NetlistIndex, TranSettings
 from ..ngspice.shared import RawResult
-from ..post.signals import harmonics, resample, time_average, uniform_grid
 from ..post.tran_post import TranPostResult, postprocess_tran
 from .ac import AcResult, run_ac
 from .common import Estimates, RunContext, build_model, check_errors
+from .pss import PssMonitor
 
 
 @dataclass
@@ -60,31 +60,27 @@ def _forced_nodes(model: CircuitModel, idx: NetlistIndex, port: str) -> list[str
     return nodes
 
 
-def _pss_change(res: RawResult, idx: NetlistIndex, period: float, meas_cycles: int, n_per: int = 100, include_dc: bool = False) -> float:
-    """Relative change of RF amplitudes (and optionally DC levels) between the first and last cycle of the window.
+def _pss_signals(idx: NetlistIndex) -> list[str]:
+    """Representative signals of the steady-state check: port voltages and currents, bulk potentials of three cells."""
+    names = [f"v({p})" for p in idx.ports] + [f"v({idx.node_bulk[i][0]})" for i in (0, idx.n_cells // 2, idx.n_cells - 1)]
+    return names + [idx.i_port[p] for p in idx.ports]
+
+
+def _pss_change(res: RawResult, idx: NetlistIndex, period: float, meas_cycles: int) -> float:
+    """Relative change of the RF amplitudes (fundamental, 2nd harmonic) between the first and last period of the
+    measurement window, evaluated on the last completed base periods by the same monitor that stops a run early
+    (analysis/pss.py), so the post-run check and the early stop use one criterion.
 
     The DC levels of a discharge with blocking capacitors settle on the slow self-bias time scale; that part is
-    controlled by the bias iteration (residual DC current), so by default only the RF amplitudes are compared.
+    controlled by the bias iteration (residual DC current), so only the RF amplitudes are compared.
     """
     if meas_cycles < 2:
         return 0.0
-    t = res.scale
-    t_end = t[-1]
-    vals = []
-    names = [f"v({p})" for p in idx.ports] + [f"v({idx.node_bulk[i][0]})" for i in (0, idx.n_cells // 2, idx.n_cells - 1)]
-    names += [idx.i_port[p] for p in idx.ports]
-    for name in names:
-        y = res.get(name)
-        c1 = uniform_grid(t_end - meas_cycles * period, period, 1, n_per)
-        c2 = uniform_grid(t_end - period, period, 1, n_per)
-        y1, y2 = resample(t, y, c1), resample(t, y, c2)
-        h1, h2 = harmonics(y1, n_per, 3), harmonics(y2, n_per, 3)
-        scale = max(abs(h2.dc), h2.amplitude(1), 1e-30)
-        if include_dc:
-            vals.append(abs(h2.dc - h1.dc) / scale)
-        vals.append(abs(h2.amplitude(1) - h1.amplitude(1)) / scale)
-        vals.append(abs(h2.amplitude(2) - h1.amplitude(2)) / scale)
-    return float(max(vals))
+    names = _pss_signals(idx)
+    mon = PssMonitor(names, period, tol=-1.0, min_cycles=meas_cycles, compare_cycles=meas_cycles)
+    mon.replay(res.scale, [res.get(n) for n in names])
+    finite = [c for c in mon.changes if np.isfinite(c)]
+    return float(finite[-1]) if finite else float("inf")
 
 
 def run_tran(ctx: RunContext, ac: Optional[AcResult] = None) -> TranResult:
@@ -113,12 +109,12 @@ def run_tran(ctx: RunContext, ac: Optional[AcResult] = None) -> TranResult:
     _, idx0 = NetlistBuilder(model, "tran", tran=TranSettings(t_max, 1.0, t_max, ramp), match_values=match_values, match_topology=match_topology).build()
     clamp_nodes = {port: _forced_nodes(model, idx0, port) for port in bias_ports}
 
-    def one_run(n_cycles: int, bias: dict[str, float]):
+    def one_run(n_cycles: int, bias: dict[str, float], monitor=None):
         clamp = {port: (vb, clamp_nodes[port]) for port, vb in bias.items()}
         t_stop = n_cycles * period
         settings = TranSettings(t_step=t_max, t_stop=t_stop, t_max=t_max, ramp_time=ramp, bias_clamp=clamp)
         netlist, idx = NetlistBuilder(model, "tran", tran=settings, match_values=match_values, match_topology=match_topology).build()
-        res = ctx.backend.run(netlist, cancel=ctx.cancel)
+        res = ctx.backend.run(netlist, cancel=ctx.cancel, monitor=monitor) if monitor is not None else ctx.backend.run(netlist, cancel=ctx.cancel)
         check_errors(res, "transient analysis")
         post = postprocess_tran(res, idx, model, period, spec.meas_cycles, n_per_period=spec.pts_per_cycle)
         return res, idx, post
@@ -163,12 +159,28 @@ def run_tran(ctx: RunContext, ac: Optional[AcResult] = None) -> TranResult:
 
     # ---- periodic steady state: extend the run if needed ----
     change = _pss_change(res, idx, period, spec.meas_cycles)
+    if change > spec.pss_tol and cycles < spec.cycles_max and getattr(ctx.backend, "supports_monitor", False):
+        # shared library: one long run that halts at the first steady period (SendData callback)
+        mon = PssMonitor(_pss_signals(idx), period, spec.pss_tol, min_cycles=cycles + 1, compare_cycles=spec.meas_cycles)
+        ctx.log(f"periodic steady state not reached (change={change:.3e}); running up to {spec.cycles_max} cycles with early stop")
+        res, idx, post = one_run(spec.cycles_max, v_dc, monitor=mon)
+        cycles = min(spec.cycles_max, int(np.floor(res.scale[-1] / period + 1e-6)))
+        change = _pss_change(res, idx, period, spec.meas_cycles)
+        history.append({"stage": "pss", "cycles": cycles, "pss_change": change, "early_stop": mon.stop_cycle is not None})
+        ctx.progress({"stage": "tran_pss", "cycles": cycles, "pss_change": change})
     while change > spec.pss_tol and cycles < spec.cycles_max:
-        cycles = min(spec.cycles_max, int(np.ceil(cycles * 1.6)))
-        ctx.log(f"periodic steady state not reached (change={change:.3e}); extending to {cycles} cycles")
+        # batch executable: extrapolate the geometric decay of the per-period change to the number of periods needed
+        mon = PssMonitor(_pss_signals(idx), period, spec.pss_tol, min_cycles=1, compare_cycles=spec.meas_cycles)
+        mon.replay(res.scale, [res.get(n) for n in _pss_signals(idx)])
+        extra = mon.predict_extra_cycles(skip=int(np.ceil(ramp / period)) + 1)  # ignore the source ramp
+        grow = int(np.ceil(cycles * 1.6))
+        target = grow if extra is None else max(int(np.ceil(cycles * 1.3)), cycles + extra)
+        cycles = min(spec.cycles_max, target)
+        ctx.log(f"periodic steady state not reached (change={change:.3e}); extending to {cycles} cycles"
+                + (f" (predicted {extra} more)" if extra is not None else ""))
         res, idx, post = one_run(cycles, v_dc)
         change = _pss_change(res, idx, period, spec.meas_cycles)
-        history.append({"stage": "pss", "cycles": cycles, "pss_change": change})
+        history.append({"stage": "pss", "cycles": cycles, "pss_change": change, "predicted_extra": extra})
         ctx.progress({"stage": "tran_pss", "cycles": cycles, "pss_change": change})
     return TranResult(raw=res, index=idx, model=model, post=post, period=period, cycles=cycles, meas_cycles=spec.meas_cycles,
                       v_dc_clamp=v_dc, bias_iterations=n_iter, pss_converged=change <= spec.pss_tol, pss_change=change,

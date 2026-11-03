@@ -67,7 +67,7 @@ def nominal_widths(project: Project, mesh: Mesh, plasma: PlasmaState, est: Estim
         s_t[:] = spec.linear_fixed_width
         return s_b, s_t
     for i, c in enumerate(mesh.cells):
-        sp = make_sheath_params(c.area, float(plasma.ns[i]), plasma.te, plasma.gas.mass_kg, spec)
+        sp = make_sheath_params(c.area, float(plasma.ns[i]), plasma.te, plasma.gas.mass_kg, spec, plasma.lambda_i)
         s_b[i] = sp.nominal_width(float(est.v1_b[i]))
         s_t[i] = sp.nominal_width(float(est.v1_t[i]))
         # keep the bulk at least 40 % of the gap

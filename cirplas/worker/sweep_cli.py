@@ -22,7 +22,8 @@ from ..core.project import load_project
 
 def _run_job(args):
     job_dir, proj_path, out_path, mode, cancel_file = args
-    cmd = [sys.executable, "-m", "cirplas.worker.cli", str(proj_path), "-o", str(out_path), "--mode", mode, "--progress", "none"]
+    worker = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, "-m", "cirplas.worker.cli"]
+    cmd = worker + [str(proj_path), "-o", str(out_path), "--mode", mode, "--progress", "none"]
     if cancel_file:
         cmd += ["--cancel-file", str(cancel_file)]
     t0 = time.time()

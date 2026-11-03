@@ -118,6 +118,8 @@ def find_library(explicit: Optional[str] = None) -> str:
 class NgspiceShared:
     """Thin wrapper around libngspice. Not thread-safe; one instance per process."""
 
+    supports_monitor = True  # run(monitor=...) can stop a transient early from the SendData callback
+
     _instance: Optional["NgspiceShared"] = None
 
     def __init__(self, library_path: Optional[str] = None):
@@ -128,6 +130,9 @@ class NgspiceShared:
         self._messages: list[str] = []
         self._errors: list[str] = []
         self._exit_requested = False
+        self._monitor = None
+        self._monitor_idx = None
+        self._monitor_stop = False
         self._bg_running = False
         self._lock = threading.Lock()
         self._setup_prototypes()
@@ -197,6 +202,31 @@ class NgspiceShared:
         return 0
 
     def _on_data(self, vals: POINTER(_VecValuesAll), count: int, ident: int, user: c_void_p) -> int:
+        mon = self._monitor
+        if mon is None or self._monitor_stop:
+            return 0
+        try:
+            va = vals.contents
+            if self._monitor_idx is None:
+                from ..analysis.pss import normalize_name
+
+                index, scale = {}, None
+                for i in range(va.veccount):
+                    vv = va.vecsa[i].contents
+                    index[normalize_name(vv.name.decode())] = i
+                    if vv.is_scale:
+                        scale = i
+                cols = [index.get(n) for n in mon.names]
+                if scale is None or any(c is None for c in cols):
+                    self._monitor = None  # signals not available in this plot: no early stop
+                    return 0
+                self._monitor_idx = (scale, cols)
+            scale, cols = self._monitor_idx
+            t = va.vecsa[scale].contents.creal
+            if mon.push(t, [va.vecsa[c].contents.creal for c in cols]):
+                self._monitor_stop = True
+        except Exception:  # noqa: BLE001 - never let an exception cross the C callback
+            self._monitor = None
         return 0
 
     def _on_init(self, info: POINTER(_VecInfoAll), ident: int, user: c_void_p) -> int:
@@ -229,8 +259,12 @@ class NgspiceShared:
         if rc != 0 or self._errors:
             raise NgspiceError("circuit load failed:\n" + "\n".join(self._errors or self._messages[-10:]))
 
-    def run(self, netlist: str, cancel: Optional[Callable[[], bool]] = None, poll_s: float = 0.005, timeout_s: Optional[float] = None) -> RawResult:
-        """Load and simulate a netlist (bg_run), then collect all vectors of the current plot."""
+    def run(self, netlist: str, cancel: Optional[Callable[[], bool]] = None, poll_s: float = 0.005, timeout_s: Optional[float] = None,
+            monitor=None) -> RawResult:
+        """Load and simulate a netlist (bg_run), then collect all vectors of the current plot.
+
+        monitor: optional `analysis.pss.PssMonitor`; when it reports the periodic steady state the run is halted and
+        the vectors up to that time are returned."""
         with self._lock:
             self.command("destroy all")
             try:
@@ -244,6 +278,7 @@ class NgspiceShared:
             self._bg_running = True
             self._bg_started = False
             self._bg_finished = False
+            self._monitor, self._monitor_idx, self._monitor_stop = monitor, None, False
             self.command("bg_run")
             halted = False
             while True:
@@ -259,6 +294,9 @@ class NgspiceShared:
                     self.command("bg_halt")
                     halted = True
                     break
+                if self._monitor_stop:
+                    self.command("bg_halt")  # periodic steady state reached: stop early
+                    break
                 if timeout_s is not None and time.time() - t0 > timeout_s:
                     self.command("bg_halt")
                     self._errors.append(f"timeout after {timeout_s} s")
@@ -270,6 +308,7 @@ class NgspiceShared:
                     break
                 time.sleep(poll_s)
             runtime = time.time() - t0
+            self._monitor = None
             if halted:
                 self._errors.append("cancelled")
             res = self._collect()

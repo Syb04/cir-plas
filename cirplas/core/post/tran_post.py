@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
 
 from ..elements import CircuitModel
 from ..netlist.builder import NetlistIndex
 from ..ngspice.shared import RawResult
+from .iedf import Iedf, build_iedf, damped_voltage, ion_transit_time
 from .signals import Harmonics, harmonics, resample, time_average, uniform_grid
 
 
@@ -36,7 +38,7 @@ class CellResult:
     p_el_t: float
     j_z_1: float  # fundamental amplitude of axial current density at the bulk center [A/m^2]
     e_ion_mean: float = 0.0  # mean ion energy at the bottom surface ~ e <Vsh> [eV]
-    e_ion_width: float = 0.0  # bimodal IEDF width estimate [eV] (RF modulation, ion transit time)
+    e_ion_width: float = 0.0  # bimodal IEDF peak separation [eV] (damped-potential model, post/iedf.py)
 
     @property
     def s_e(self) -> float:
@@ -69,6 +71,7 @@ class TranPostResult:
     power_balance_error: float
     extra: dict = field(default_factory=dict)
     maps: dict = field(default_factory=dict)  # 2D (r, z) arrays: p_ohm [W/m^3], jz_1 [A/m^2], jr_1 [A/m^2], z_mid [m]
+    iedf: Optional["Iedf"] = None  # ion energy distribution at the bottom surface of every cell
 
     def radial(self, name: str) -> np.ndarray:
         return np.array([getattr(c, name) for c in self.cells])
@@ -106,6 +109,8 @@ def postprocess_tran(res: RawResult, idx: NetlistIndex, model: CircuitModel, per
         return resample(t_w, y, t_u)
 
     cells: list[CellResult] = []
+    iedf_v: list[np.ndarray] = []
+    iedf_s: list[float] = []
     p_diss = 0.0
     nz = idx.n_z
     n_c = idx.n_cells
@@ -181,17 +186,16 @@ def postprocess_tran(res: RawResult, idx: NetlistIndex, model: CircuitModel, per
         p_ohm += radial_cell_share[i]
         s_b = ce.sheath_b.width(vsh_b)
         s_t = ce.sheath_t.width(vsh_t)
-        # IEDF estimate (bottom surface): collisionless ions, mean energy e<Vsh>; modulation width from the RF
-        # amplitude and the ion sheath transit time tau_i = 3 s_mean sqrt(M/(2 e <Vsh>)) (Benoit-Cattin/Bernard form)
-        from ..constants import E_CHARGE as _E
-
+        # IEDF (bottom surface): damped-potential response of the ions to the period-averaged sheath voltage with
+        # the transit time tau_i = 3 s_mean sqrt(M/(2 e <Vsh>)); mean energy e<Vsh>
         s_mean_b = float(time_average(t_w, s_b))
-        v_dc_b = max(hb.dc, 1e-3)
-        tau_i = 3.0 * s_mean_b * math.sqrt(model.plasma.gas.mass_kg / (2.0 * _E * v_dc_b))
-        w0 = 2.0 * math.pi / period
-        e_width = 2.0 * hb.amplitude(1) / (w0 * tau_i) if tau_i > 0 else 0.0
+        tau_i = ion_transit_time(s_mean_b, hb.dc, model.plasma.gas.mass_kg)
+        v_cycle = uni(vsh_b).reshape(-1, n_per_period).mean(axis=0)
+        v_eff = damped_voltage(v_cycle, 2.0 * math.pi / period, tau_i)
+        iedf_v.append(v_eff)
+        iedf_s.append(s_mean_b)
         cells.append(CellResult(
-            e_ion_mean=hb.dc, e_ion_width=min(e_width, 2.0 * hb.amplitude(1)),
+            e_ion_mean=hb.dc, e_ion_width=float(v_eff.max() - v_eff.min()),
             index=i, r_center=c.r_center, area=c.area,
             vsh_b_dc=hb.dc, vsh_b_1=hb.amplitude(1), vsh_b_min=float(vsh_b.min()), vsh_b_max=float(vsh_b.max()),
             vsh_t_dc=ht.dc, vsh_t_1=ht.amplitude(1),
@@ -263,4 +267,5 @@ def postprocess_tran(res: RawResult, idx: NetlistIndex, model: CircuitModel, per
             "r_centers": np.array([c.r_center for c in model.mesh.cells]), "r_boundaries": np.array([b.boundary.r for b in model.boundaries])}
     return TranPostResult(t_window=t_u, cells=cells, ports=ports, p_ohm_radial_total=p_rad_total,
                           p_total_dissipated=p_diss, p_source_total=p_src_total, power_balance_error=pbe,
-                          extra={"p_capacitor_dc": p_cap_dc}, maps=maps)
+                          extra={"p_capacitor_dc": p_cap_dc}, maps=maps,
+                          iedf=build_iedf(iedf_v, np.array(iedf_s), model.plasma.lambda_i))

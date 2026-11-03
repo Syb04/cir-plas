@@ -252,3 +252,63 @@ class DensityView(QWidget):
         a = it["attrs"]
         te = np.asarray(it["te"])
         self.info.setText(f"反復 {int(a.get('iterations', 0))} 回, {'収束' if bool(a.get('converged', False)) else '未収束'},  Te = {te[-1] if len(te) else float('nan'):.3f} eV,  D_a = {float(a.get('d_a', 0)):.3f} m²/s")
+
+
+class IedfView(QWidget):
+    """Ion energy distribution at the bottom surface of selected cells (damped-potential model)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.data: ResultData | None = None
+        lay = QHBoxLayout(self)
+        self.cells = QListWidget()
+        self.cells.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self.cells.itemSelectionChanged.connect(self.redraw)
+        self.cells.setMaximumWidth(220)
+        right = QWidget()
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 0, 0)
+        self.info = QLabel("")
+        self.info.setWordWrap(True)
+        self.plot = theme.make_plot(title="IEDF（下部表面、無衝突イオン）")
+        self.plot.setLabel("bottom", "イオンエネルギー [eV]")
+        self.plot.setLabel("left", "f(E) [1/eV]")
+        self.plot.addLegend()
+        rl.addWidget(self.info)
+        rl.addWidget(self.plot, 1)
+        lay.addWidget(self.cells)
+        lay.addWidget(right, 1)
+
+    def set_data(self, data: ResultData) -> None:
+        self.data = data
+        self.cells.blockSignals(True)
+        self.cells.clear()
+        iedf = data.tran.get("iedf") if data.tran is not None else None
+        if iedf is not None:
+            r = np.asarray(data.r) * 1e3
+            n = len(r)
+            default = {0, n // 2, n - 1}
+            idx = data.mesh.get("region_index")
+            if idx is not None:
+                wafer = np.nonzero(np.asarray(idx) == idx[0])[0]
+                default.add(int(wafer[-1]))
+            for i, ri in enumerate(r):
+                self.cells.addItem(f"セル {i + 1}  r = {ri:.1f} mm")
+                self.cells.item(i).setSelected(i in default)
+        self.cells.blockSignals(False)
+        self.redraw()
+
+    def redraw(self) -> None:
+        self.plot.clear()
+        iedf = self.data.tran.get("iedf") if self.data is not None and self.data.tran is not None else None
+        if iedf is None:
+            self.info.setText("IEDF は TRAN 結果でのみ利用できます")
+            return
+        e = np.asarray(iedf["energy"])
+        rows = sorted(self.cells.row(it) for it in self.cells.selectedItems())
+        texts = []
+        for k, i in enumerate(rows):
+            self.plot.plot(e, np.asarray(iedf["f"])[i], pen=theme.series_pen(k), name=f"r = {self.data.r[i]*1e3:.1f} mm")
+            texts.append(f"r={self.data.r[i]*1e3:.0f} mm: {float(iedf['peak_low'][i]):.0f}–{float(iedf['peak_high'][i]):.0f} eV, "
+                         f"無衝突割合 {float(iedf['collisionless_fraction'][i])*100:.0f} %")
+        self.info.setText("  /  ".join(texts))

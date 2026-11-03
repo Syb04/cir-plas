@@ -189,7 +189,9 @@ class StochasticSpec(StrictModel):
 
 
 class SheathSpec(StrictModel):
-    model: Literal["matrix", "child"] = "matrix"
+    model: Literal["matrix", "child", "collisional", "auto"] = Field(
+        "matrix", description="matrix (uniform ions), child (collisionless Child law), collisional (mobility-limited Child law, "
+        "s ~ V^(3/5) lambda_i^(1/5)) or auto (collisional when lambda_i < Child width, else child)")
     alpha_min: float = Field(2.0, gt=0, description="minimum sheath width in Debye lengths")
     stochastic: StochasticSpec = Field(default_factory=StochasticSpec)
     ohmic_sheath: bool = False

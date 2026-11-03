@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (QComboBox, QDockWidget, QFileDialog, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPlainTextEdit,
@@ -161,6 +163,10 @@ class MainWindow(QMainWindow):
         a = QAction("結果ファイルを開く(&R)…", self)
         a.triggered.connect(self.open_results)
         m_file.addAction(a)
+        a = QAction("レポートを出力(&E)…", self)
+        a.setShortcut(QKeySequence("Ctrl+E"))
+        a.triggered.connect(self.export_report)
+        m_file.addAction(a)
         m_file.addSeparator()
         a = QAction("終了(&X)", self)
         a.setShortcut(QKeySequence.StandardKey.Quit)
@@ -282,6 +288,23 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentWidget(self.results)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "結果の読み込み", str(exc))
+
+    def export_report(self) -> None:
+        """Write the HTML report of the result shown in the results tab (spec 04 section 7, Ctrl+E)."""
+        data = getattr(self.results, "data", None)
+        if data is None:
+            QMessageBox.information(self, "レポート", "結果タブに表示中の結果がありません。")
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "レポートを出力", str(Path(data.path).with_suffix(".html")), "HTML (*.html)")
+        if not path:
+            return
+        try:
+            from ..core.report import write_report
+
+            write_report(data.path, path)
+            self.statusBar().showMessage(f"レポートを書き出しました: {path}", 8000)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "レポート", str(exc))
 
     def new_project(self) -> None:
         self.model.set_project(default_project())
