@@ -138,3 +138,24 @@ def test_worker_subcommands_resolve():
     assert cli._subcommand("optimize") is optimize_cli.main
     assert cli._subcommand("report") is report_cli.main
     assert cli._subcommand("project.json") is None
+
+
+def test_stepped_esc_positions():
+    """Flat substrate, wafer on the upper ceramic step, edge ring on the lower step with its top below the wafer."""
+    from cirplas.core.project import ESC_TUNING_PATHS, apply_path, default_project, Project, stepped_esc_project
+
+    p = stepped_esc_project(ceramic_lower=3e-3, ceramic_step=3e-3, ring=2e-3)
+    wafer, ring, outer = p.geometry.regions
+    assert (wafer.name, ring.name, outer.name) == ("wafer", "fr", "outer")
+    assert all(r.z_offset == 0.0 for r in p.geometry.regions)
+    assert wafer.stack[0].material == ring.stack[0].material == "al2o3"
+    assert wafer.stack[0].t - ring.stack[0].t == pytest.approx(3e-3)
+    assert ring.stack_thickness < wafer.stack[0].t < wafer.stack_thickness
+    assert ring.r_out > wafer.r_out and default_project().name == p.name
+    # the allowances are plain stack thicknesses: changing them keeps the substrate flat
+    d = p.model_dump(mode="json")
+    for path, _ in ESC_TUNING_PATHS:
+        apply_path(d, path, 4e-3)
+    q = Project.model_validate(d)
+    assert [r.stack[0].t for r in q.geometry.regions[:2]] == [4e-3, 4e-3] and q.geometry.regions[1].stack[1].t == 4e-3
+    assert all(r.z_offset == 0.0 for r in q.geometry.regions)

@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QComboBox, QDockWidget, QFileDialog, QHBoxLayout,
                                QPushButton, QScrollArea, QTabWidget, QVBoxLayout, QWidget)
 
 from .. import __version__
-from ..core.project import default_project
+from ..core.project import TEMPLATES, default_project
 from . import theme
 from .panels.circuit import CircuitPanel
 from .panels.compare import ComparePanel
@@ -166,6 +166,11 @@ class MainWindow(QMainWindow):
             a.setShortcut(key)
             a.triggered.connect(slot)
             m_file.addAction(a)
+        m_new = m_file.addMenu("テンプレートから新規(&T)")
+        for label, factory in TEMPLATES.items():
+            a = QAction(label, self)
+            a.triggered.connect(lambda _=False, f=factory: self.model.set_project(f()))
+            m_new.addAction(a)
         m_file.addSeparator()
         a = QAction("結果ファイルを開く(&R)…", self)
         a.triggered.connect(self.open_results)

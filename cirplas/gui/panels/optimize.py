@@ -178,13 +178,18 @@ class OptimizePanel(QWidget):
         self.status.setText("スタック厚（geometry.regions.N.stack.K.t）の変数を選んでください")
 
     def suggest(self) -> None:
-        """Default variable: the separate FR source amplitude, else the coupling-ring thickness under the FR."""
+        """Default variables: the separate FR source amplitude; on a flat substrate (stepped ESC) the ceramic under the ring
+        and the ring thickness; else the coupling ring on a lowered pedestal, with a z_offset tie keeping its surface."""
         d = self.model.data
         if "F" in d.get("circuit", {}).get("ports", {}) and d["circuit"]["ports"]["F"].get("sources"):
             self.add_param("circuit.ports.F.sources.0.v")
             return
         for i, reg in enumerate(d.get("geometry", {}).get("regions", [])):
             if reg.get("name") == "fr" and len(reg.get("stack", [])) >= 2:
+                if not reg.get("z_offset"):
+                    for k in range(len(reg["stack"])):
+                        self.add_param(f"geometry.regions.{i}.stack.{k}.t", log=True)
+                    return
                 self.add_param(f"geometry.regions.{i}.stack.1.t", log=True)
                 self.params.selectRow(0)
                 self.tie_surface()

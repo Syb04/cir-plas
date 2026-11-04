@@ -119,6 +119,7 @@
       "kappa_sh": 1.0,
       "electron_current": "bsource",
       "smoothing": 0.1,
+      "linear_fixed_width": null,
       "cap_form": "ecf"
     },
     "h_l": {
@@ -131,13 +132,25 @@
     }
   },
   "circuit": {
+    "mode": "ports",
     "ports": {
       "W": {
+        "generator": {
+          "type": "none",
+          "r_gen": 50.0,
+          "auto": true,
+          "l": null,
+          "c": null,
+          "c2": null,
+          "q": null,
+          "topology": "auto"
+        },
         "sources": [
           {
             "f": 60000000.0,
             "v": 400.0,
-            "phase_deg": 0.0
+            "phase_deg": 0.0,
+            "power": null
           }
         ],
         "blocking_c": 2e-09,
@@ -160,6 +173,7 @@
       "mode": "auto",
       "value": null
     },
+    "schematic": null,
     "extra_netlist": ""
   },
   "numerics": {
@@ -200,7 +214,8 @@
       "relax": 0.4,
       "tol": 0.001,
       "max_iter": 30,
-      "refine_with_tran": false
+      "refine_with_tran": false,
+      "tran_refine_iter": 1
     },
     "ngspice": {
       "backend": "auto",

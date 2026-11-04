@@ -27,7 +27,9 @@ def editor(qtbot):
 def test_port_mode_shows_equivalent_schematic(editor):
     assert editor.model.get("circuit.mode") == "ports"
     types = sorted(c["type"] for c in editor.comps)
-    assert types.count("Vrf") == 1 and types.count("Plasma") == 1 and "C" in types and "L" in types
+    assert types.count("Vrf") == 1 and types.count("Plasma") == 1 and "C" in types and "L" not in types  # no feed inductance by default
+    editor.model.set("circuit.ports.W.l_feed", 20e-9)
+    assert "L" in [c["type"] for c in editor.comps]
     assert editor.banner.isVisible()
     assert editor.extraction is not None and editor.extraction.bias_ports == ["W"]
 

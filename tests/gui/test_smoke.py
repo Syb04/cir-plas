@@ -46,7 +46,7 @@ def test_model_edit_updates_cross_section_and_validation(window, qtbot):
     m.set("geometry.regions.1.r_out", 0.01)
     assert not m.is_valid
     m.undo()
-    assert m.is_valid and abs(m.get("geometry.regions.1.r_out") - 0.151) < 1e-9
+    assert m.is_valid and abs(m.get("geometry.regions.1.r_out") - 0.180) < 1e-9
 
 
 def test_netlist_preview(window):

@@ -549,21 +549,12 @@ def save_project(project: Project, path: str | Path) -> None:
     Path(path).write_text(project.to_json(), encoding="utf-8")
 
 
-def default_project() -> Project:
-    """Representative 300 mm CCP (spec 00 section 2.2): FR fed from the ESC by capacitive coupling."""
+def _representative(name: str, regions: list[Region], n_r: dict[str, int], grading: dict[str, float]) -> Project:
+    """Representative 300 mm CCP (spec 00 section 2.2) with the given lower-electrode regions."""
     return Project(
-        name="demo_300mm_60MHz",
+        name=name,
         geometry=Geometry(
-            regions=[
-                Region(name="wafer", r_out=0.150, conductor="W",
-                       stack=[Layer(material="al2o3", t=1.0e-3), Layer(material="si_wafer_p", t=0.775e-3)]),
-                Region(name="edge_gap", r_out=0.151, conductor="W",
-                       stack=[Layer(material="al2o3", t=1.0e-3)]),
-                Region(name="fr", r_out=0.180, conductor="W", z_offset=-(7.0e-3 - 1.775e-3),
-                       stack=[Layer(material="al2o3", t=1.0e-3), Layer(material="quartz", t=2.0e-3), Layer(material="si_fr", t=4.0e-3)]),
-                Region(name="outer", r_out=0.250, conductor="G", z_offset=-(6.0e-3 - 1.775e-3),
-                       stack=[Layer(material="quartz", t=6.0e-3)]),
-            ],
+            regions=regions,
             gap=GapSpec(type="constant", value=0.030),
             top=TopSpec(conductor="ground", stack=[Layer(material="si_fr", t=6.0e-3)]),
             outer_boundary=OuterBoundary(type="short"),
@@ -573,11 +564,53 @@ def default_project() -> Project:
             density=DensitySpec(model="parabolic", n0=1.0e16, alpha=0.3),
         ),
         circuit=CircuitSpec(
-            ports={"W": PortSpec(sources=[SourceSpec(f=60e6, v=400.0)], blocking_c=2.0e-9, l_feed=20e-9, c_stray=300e-12)},
+            ports={"W": PortSpec(sources=[SourceSpec(f=60e6, v=400.0)], blocking_c=2.0e-9, l_feed=0.0, c_stray=100e-12)},
             fr=FrSpec(type="esc_coupled"),
         ),
-        numerics=NumericsSpec(
-            mesh=MeshSpec(n_r={"wafer": 24, "edge_gap": 1, "fr": 8, "outer": 6}, grading={"wafer": 1.15, "fr": 1.1}, n_z=1),
-            analysis="tran",
-        ),
+        numerics=NumericsSpec(mesh=MeshSpec(n_r=n_r, grading=grading, n_z=1), analysis="tran"),
     )
+
+
+# tuning allowances of stepped_esc_project(): JSON path, label
+ESC_TUNING_PATHS = [("geometry.regions.0.stack.0.t", "ウェハ下のセラミック厚 [m]"),
+                    ("geometry.regions.1.stack.0.t", "エッジリング下のセラミック厚 [m]"),
+                    ("geometry.regions.1.stack.1.t", "エッジリング厚さ [m]")]
+
+
+def stepped_esc_project(ceramic_lower: float = 3.0e-3, ceramic_step: float = 3.0e-3, ring: float = 2.0e-3) -> Project:
+    """Stepped electrostatic chuck: the RF substrate is always flat (z_offset = 0 everywhere) and carries one ceramic plate
+    that is thicker under the wafer. The wafer lies on the upper step; the edge ring lies on the lower step, directly
+    around it, with its top below the wafer. The tuning allowances are the ceramic thicknesses and the ring thickness
+    (see ESC_TUNING_PATHS); the heights of the surfaces follow from the stacks."""
+    ceramic_wafer = ceramic_lower + ceramic_step
+    return _representative(
+        "esc_stepped_300mm_60MHz",
+        [Region(name="wafer", r_out=0.150, conductor="W",
+                stack=[Layer(material="al2o3", t=ceramic_wafer), Layer(material="si_wafer_p", t=0.775e-3)]),
+         Region(name="fr", r_out=0.180, conductor="W",
+                stack=[Layer(material="al2o3", t=ceramic_lower), Layer(material="si_fr", t=ring)]),
+         Region(name="outer", r_out=0.250, conductor="G",
+                stack=[Layer(material="quartz", t=ceramic_lower + ring)])],
+        {"wafer": 24, "fr": 8, "outer": 6}, {"wafer": 1.15, "fr": 1.1})
+
+
+def coupling_ring_project() -> Project:
+    """FR on a lowered pedestal with a quartz coupling ring, surface level with the wafer (template)."""
+    return _representative(
+        "demo_300mm_60MHz",
+        [Region(name="wafer", r_out=0.150, conductor="W",
+                stack=[Layer(material="al2o3", t=1.0e-3), Layer(material="si_wafer_p", t=0.775e-3)]),
+         Region(name="edge_gap", r_out=0.151, conductor="W",
+                stack=[Layer(material="al2o3", t=1.0e-3)]),
+         Region(name="fr", r_out=0.180, conductor="W", z_offset=-(7.0e-3 - 1.775e-3),
+                stack=[Layer(material="al2o3", t=1.0e-3), Layer(material="quartz", t=2.0e-3), Layer(material="si_fr", t=4.0e-3)]),
+         Region(name="outer", r_out=0.250, conductor="G", z_offset=-(6.0e-3 - 1.775e-3),
+                stack=[Layer(material="quartz", t=6.0e-3)])],
+        {"wafer": 24, "edge_gap": 1, "fr": 8, "outer": 6}, {"wafer": 1.15, "fr": 1.1})
+
+
+TEMPLATES = {"段付き静電チャック（既定）": stepped_esc_project, "結合リング（FR 台座を下げて表面を揃える）": coupling_ring_project}
+
+
+def default_project() -> Project:
+    return stepped_esc_project()

@@ -21,14 +21,26 @@ def test_defaults_and_arguments(qtbot, model):
 
     panel = OptimizePanel(model)
     qtbot.addWidget(panel)
-    # representative project: the coupling-ring thickness under the FR, with the surface kept by a z_offset tie
+    # stepped ESC: the substrate stays flat, the allowances are the ceramic under the ring and the ring thickness
+    assert [panel.params.item(r, 0).text() for r in range(panel.params.rowCount())] == ["geometry.regions.1.stack.0.t", "geometry.regions.1.stack.1.t"]
+    assert panel.ties.rowCount() == 0
+    args = panel.cli_arguments()
+    assert args[0] == "--param" and args[1].endswith(":log") and "--tie" not in args and args[args.index("--objective") + 1] == "fr_step"
+
+
+def test_defaults_on_a_lowered_pedestal(qtbot):
+    from cirplas.core.project import coupling_ring_project
+    from cirplas.gui.panels.optimize import OptimizePanel
+    from cirplas.gui.project_model import ProjectModel
+
+    m = ProjectModel(coupling_ring_project())
+    panel = OptimizePanel(m)
+    qtbot.addWidget(panel)
     assert panel.params.rowCount() == 1 and panel.params.item(0, 0).text() == "geometry.regions.2.stack.1.t"
     assert panel.ties.rowCount() == 1 and panel.ties.item(0, 0).text() == "geometry.regions.2.z_offset"
-    z0 = model.get("geometry.regions.2.z_offset")
-    t0 = model.get("geometry.regions.2.stack.1.t")
+    z0 = m.get("geometry.regions.2.z_offset")
+    t0 = m.get("geometry.regions.2.stack.1.t")
     assert float(panel.ties.item(0, 3).text()) == pytest.approx(z0 + t0)
-    args = panel.cli_arguments()
-    assert args[0] == "--param" and args[1].endswith(":log") and "--tie" in args and args[args.index("--objective") + 1] == "fr_step"
 
 
 def test_progress_display(qtbot, model):

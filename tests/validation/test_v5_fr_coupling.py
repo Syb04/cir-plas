@@ -6,11 +6,11 @@ import pytest
 
 from cirplas.core.analysis.ac import run_ac
 from cirplas.core.analysis.common import RunContext
-from cirplas.core.project import Layer, Project, default_project
+from cirplas.core.project import Layer, Project, coupling_ring_project
 
 
 def _project(coupling_ring_t=2.0e-3, same_stack=False, n_wafer=24, n_fr=8):
-    p = default_project()
+    p = coupling_ring_project()
     for port in p.circuit.ports.values():
         port.l_feed = 0.0
         port.c_stray = 100e-12

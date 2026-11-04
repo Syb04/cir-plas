@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout, Q
                                QWidget)
 
 from ...core.analysis.sweep import SweepAxis, SweepSpec, get_path
+from ...core.project import ESC_TUNING_PATHS
 from .. import theme
 from ..project_model import ProjectModel
 from ..runmanager import output_base, worker_command
@@ -23,7 +24,7 @@ COMMON_PATHS = [
     ("circuit.ports.W.sources.0.v", "ウェハ電極 RF 振幅 [V]"),
     ("circuit.ports.W.sources.0.f", "ウェハ電極 周波数 [Hz]"),
     ("circuit.ports.W.sources.0.power", "ウェハ電極 電力指定 [W]"),
-    ("geometry.regions.2.stack.1.t", "FR 結合リング厚さ [m]（既定プロジェクト）"),
+    *[(p, f"{label}（段付き ESC）") for p, label in ESC_TUNING_PATHS],
     ("geometry.gap.value", "ギャップ [m]"),
     ("plasma.pressure_pa", "圧力 [Pa]"),
     ("plasma.density.n0", "中心密度 n0 [m^-3]"),
