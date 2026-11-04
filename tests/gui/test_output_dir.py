@@ -101,3 +101,11 @@ def test_run_without_a_project_path_completes(qtbot, model, tmp_path, monkeypatc
     panel.run("ac")
     qtbot.waitUntil(lambda: bool(done), timeout=120000)
     assert done[0].startswith(str(tmp_path / "CirPlas" / "runs")) and os.path.exists(done[0])
+
+
+def test_app_icon_loads_from_the_package_data():
+    from cirplas.gui.app import app_icon, create_app
+
+    app = create_app(["cirplas"])
+    assert not app_icon().isNull() and not app.windowIcon().isNull()
+    assert app_icon().pixmap(16, 16).width() == 16

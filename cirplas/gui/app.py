@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import sys
+from importlib import resources
 
 from PySide6.QtCore import QCoreApplication, QTimer
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from ..core.project import default_project
 from . import theme
 from .mainwindow import MainWindow
 from .project_model import ProjectModel
+
+
+def app_icon() -> QIcon:
+    return QIcon(str(resources.files("cirplas").joinpath("data", "cirplas_icon.png")))
 
 
 def create_app(argv=None) -> QApplication:
@@ -21,6 +27,7 @@ def create_app(argv=None) -> QApplication:
     app = QApplication.instance() or QApplication(argv)
     app.setApplicationName("CirPlas")
     app.setOrganizationName("CirPlas")
+    app.setWindowIcon(app_icon())
     mgr = theme.manager()
     mgr.load_settings()
     mgr.apply(app)
@@ -41,6 +48,10 @@ def show_unhandled(exc_type, exc, tb) -> None:
 
 def main(argv=None) -> int:
     argv = list(sys.argv if argv is None else argv)
+    if sys.platform == "win32":  # otherwise a source run is grouped under python.exe and shows its taskbar icon
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("CirPlas.CirPlas")
     app = create_app(argv)
     sys.excepthook = show_unhandled
     model = ProjectModel(default_project())

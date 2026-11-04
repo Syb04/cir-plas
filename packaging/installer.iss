@@ -21,6 +21,8 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 ChangesAssociations=yes
 LicenseFile=..\LICENSE
+SetupIconFile=cirplas.ico
+UninstallDisplayIcon={app}\{#MyAppExeName}
 
 [Languages]
 Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
@@ -42,6 +44,7 @@ Name: "{autodesktop}\CirPlas"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktop
 [Registry]
 Root: HKA; Subkey: "Software\Classes\.cirplas.json"; ValueType: string; ValueName: ""; ValueData: "CirPlasProject"; Flags: uninsdeletevalue
 Root: HKA; Subkey: "Software\Classes\CirPlasProject"; ValueType: string; ValueName: ""; ValueData: "CirPlas project"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\CirPlasProject\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"
 Root: HKA; Subkey: "Software\Classes\CirPlasProject\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
 
 [Run]

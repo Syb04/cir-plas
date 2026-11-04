@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(SPECPATH).resolve().parent
+ICON = str(ROOT / "packaging" / "cirplas.ico")
 NGSPICE_DIR = ROOT / "packaging" / "ngspice"
 
 # bundled data (material / gas databases, example projects)
@@ -54,8 +55,7 @@ a_cli = Analysis(
 MERGE((a_gui, "cirplas-gui", "cirplas-gui"), (a_cli, "cirplas-solve", "cirplas-solve"))
 
 pyz_gui = PYZ(a_gui.pure)
-exe_gui = EXE(pyz_gui, a_gui.scripts, [], exclude_binaries=True, name="cirplas-gui", console=False,
-              icon=str(ROOT / "packaging" / "cirplas.ico") if (ROOT / "packaging" / "cirplas.ico").exists() else None)
+exe_gui = EXE(pyz_gui, a_gui.scripts, [], exclude_binaries=True, name="cirplas-gui", console=False, icon=ICON)
 pyz_cli = PYZ(a_cli.pure)
-exe_cli = EXE(pyz_cli, a_cli.scripts, [], exclude_binaries=True, name="cirplas-solve", console=True)
+exe_cli = EXE(pyz_cli, a_cli.scripts, [], exclude_binaries=True, name="cirplas-solve", console=True, icon=ICON)
 coll = COLLECT(exe_gui, a_gui.binaries, a_gui.datas, exe_cli, a_cli.binaries, a_cli.datas, strip=False, upx=False, name="CirPlas")

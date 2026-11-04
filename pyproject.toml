@@ -32,7 +32,7 @@ cirplas-report = "cirplas.worker.report_cli:main"
 include = ["cirplas*"]
 
 [tool.setuptools.package-data]
-cirplas = ["data/*.json", "data/**/*.json"]
+cirplas = ["data/*.json", "data/**/*.json", "data/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
