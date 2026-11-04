@@ -75,7 +75,8 @@
       "type": "constant",
       "value": 0.03,
       "table": null,
-      "reference_region": null
+      "reference_region": null,
+      "datum": "surface"
     },
     "top": {
       "conductor": "ground",

@@ -159,3 +159,35 @@ def test_stepped_esc_positions():
     q = Project.model_validate(d)
     assert [r.stack[0].t for r in q.geometry.regions[:2]] == [4e-3, 4e-3] and q.geometry.regions[1].stack[1].t == 4e-3
     assert all(r.z_offset == 0.0 for r in q.geometry.regions)
+
+
+def test_top_electrode_fixed_to_the_substrate():
+    """Thicker ceramic under the wafer narrows the gap there and leaves the top electrode and the ring gap alone."""
+    from cirplas.core.project import Project, apply_path, coupling_ring_project, stepped_esc_project
+
+    p = stepped_esc_project()
+    geo = p.geometry
+    assert geo.gap.datum == "substrate"
+    assert geo.local_gap(geo.regions[0], 0.0) == pytest.approx(0.030)  # 30 mm above the wafer with the default stacks
+    z_top = geo.z_top_surface(0.0)
+    ring_gap = geo.local_gap(geo.regions[1], 0.16)
+    d = p.model_dump(mode="json")
+    apply_path(d, "geometry.regions.0.stack.0.t", 8e-3)  # +2 mm
+    q = Project.model_validate(d).geometry
+    assert q.z_top_surface(0.0) == pytest.approx(z_top)
+    assert q.local_gap(q.regions[0], 0.0) == pytest.approx(0.028)
+    assert q.local_gap(q.regions[1], 0.16) == pytest.approx(ring_gap)
+    # a ring thickness change moves only the gap above the ring
+    apply_path(d, "geometry.regions.1.stack.1.t", 3e-3)  # +1 mm
+    q = Project.model_validate(d).geometry
+    assert q.local_gap(q.regions[1], 0.16) == pytest.approx(ring_gap - 1e-3)
+    # the top electrode cannot be reached by a stack
+    apply_path(d, "geometry.regions.0.stack.0.t", 0.04)
+    with pytest.raises(ValueError):
+        Project.model_validate(d)
+    # the surface datum keeps following the reference surface
+    c = coupling_ring_project()
+    d = c.model_dump(mode="json")
+    apply_path(d, "geometry.regions.0.stack.0.t", 3e-3)
+    q = Project.model_validate(d).geometry
+    assert c.geometry.gap.datum == "surface" and q.local_gap(q.regions[0], 0.0) == pytest.approx(0.030)

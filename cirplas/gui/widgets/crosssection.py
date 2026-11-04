@@ -79,7 +79,7 @@ class CrossSectionView(QGraphicsView):
             r_in = reg.r_out
         # top stack and top conductor (flat)
         r_wall = geo.r_wall * S
-        z = geo.reference_region().z_surface_abs + geo.gap_at(0.0)
+        z = geo.z_top_surface(0.0)
         for layer in reversed(geo.top.stack):  # listed top->bottom; draw bottom-up
             name = layer.material if isinstance(layer.material, str) else "custom"
             rect = QRectF(0, -(z + layer.t) * S * Z, r_wall, layer.t * S * Z)

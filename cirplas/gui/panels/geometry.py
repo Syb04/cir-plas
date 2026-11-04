@@ -136,8 +136,11 @@ class GeometryPanel(QWidget):
         lay.addWidget(group("スタック", sbox))
         # gap / top / outer
         self.form = BoundForm(model)
-        self.form.add_float("ギャップ（基準面〜上部スタック下面）", "geometry.gap.value", "mm", 1e3,
-                            "基準領域（既定: 最初の領域）の表面から上部電極側表面までの距離。上部電極は平坦。")
+        self.form.add_choice("上部電極の位置の基準", "geometry.gap.datum", [("substrate", "基台から（上部電極を固定）"), ("surface", "基準領域の表面から（表面に追従）")],
+                             "基台から: スタック厚を変えても上部電極は動かず、プラズマのギャップが変わる")
+        self.form.add_float("基準〜上部スタック下面の距離", "geometry.gap.value", "mm", 1e3,
+                            "上で選んだ基準から上部電極側表面までの距離。上部電極は平坦。")
+        self.form.add_info("ウェハ面のギャップ", self._wafer_gap_text)
         self.form.add_choice("上部電極", "geometry.top.conductor", [("ground", "接地"), ("driven", "駆動（ポート T）")])
         self.form.add_choice("外周境界", "geometry.outer_boundary.type", [("short", "短絡（チャンバ壁）"), ("open", "開放"), ("impedance", "インピーダンス")])
         self.form.add_float("外周境界 R", "geometry.outer_boundary.r", "Ω", 1.0)
@@ -164,6 +167,13 @@ class GeometryPanel(QWidget):
         self.refresh()
 
     # ------------------------------------------------------------------ regions
+    def _wafer_gap_text(self) -> str:
+        """Plasma gap above the first region, which depends on the stacks when the top electrode is fixed."""
+        if not self.model.is_valid:
+            return "-"
+        geo = self.model.project().geometry
+        return f"{geo.local_gap(geo.regions[0], 0.0) * 1e3:.2f} mm"
+
     def _selected_stack_path(self):
         row = self.table.currentRow()
         regions = self.model.get("geometry.regions", [])

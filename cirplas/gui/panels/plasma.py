@@ -54,7 +54,7 @@ class PlasmaPanel(QWidget):
 
             p = self.model.project()
             mesh = build_radial_mesh(p.geometry, p.numerics.mesh)
-            gap = p.geometry.gap_at(0.0)
+            gap = p.geometry.local_gap(p.geometry.regions[0], 0.0)
             st = compute_plasma_state(p, mesh.r_centers, l_p_ref=0.85 * gap)
             f = p.f_max()
             w = 2 * math.pi * f

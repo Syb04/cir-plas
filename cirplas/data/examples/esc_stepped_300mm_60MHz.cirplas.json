@@ -55,9 +55,10 @@
     ],
     "gap": {
       "type": "constant",
-      "value": 0.03,
+      "value": 0.036774999999999995,
       "table": null,
-      "reference_region": null
+      "reference_region": null,
+      "datum": "substrate"
     },
     "top": {
       "conductor": "ground",

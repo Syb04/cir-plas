@@ -60,14 +60,17 @@ class Region(StrictModel):
 
 
 class GapSpec(StrictModel):
-    """Gap between the reference region's plasma-facing surface and the top stack's plasma-facing surface.
+    """Height of the top stack's plasma-facing surface. The top electrode is flat.
 
-    The top electrode is flat: other regions see gap(r) + (z_surface_ref - z_surface_region)."""
+    datum "surface": measured from the reference region's plasma-facing surface, so the top electrode follows that surface.
+    datum "substrate": measured from the substrate (z = 0), so the top electrode stays fixed when stacks change thickness.
+    Each region then sees z_top - z_surface_region."""
 
     type: Literal["constant", "table"] = "constant"
     value: Optional[float] = Field(None, gt=0, description="gap [m] (constant)")
     table: Optional[list[tuple[float, float]]] = Field(None, description="(r [m], gap [m]) pairs")
     reference_region: Optional[str] = Field(None, description="region whose surface defines the gap (default: first region)")
+    datum: Literal["surface", "substrate"] = Field("surface", description="what value/table are measured from")
 
     @model_validator(mode="after")
     def _check(self) -> "GapSpec":
@@ -117,10 +120,9 @@ class Geometry(StrictModel):
                 raise ValueError("gap.table must extend to the outer wall radius")
         if self.gap.reference_region is not None and self.gap.reference_region not in names:
             raise ValueError(f"gap.reference_region '{self.gap.reference_region}' is not a region")
-        z_ref = self.reference_region().z_surface_abs
         for reg in self.regions:
             r_mid = 0.5 * (reg.r_out + (self.regions[self.regions.index(reg) - 1].r_out if self.regions.index(reg) > 0 else 0.0))
-            if self.gap_at(r_mid) + z_ref - reg.z_surface_abs <= 0:
+            if self.local_gap(reg, r_mid) <= 0:
                 raise ValueError(f"region '{reg.name}' surface reaches the top electrode (check z_offset / stack thickness)")
         return self
 
@@ -131,7 +133,11 @@ class Geometry(StrictModel):
 
     def local_gap(self, region: Region, r: float) -> float:
         """Gap between this region's surface and the top stack surface at radius r."""
-        return self.gap_at(r) + self.reference_region().z_surface_abs - region.z_surface_abs
+        return self.z_top_surface(r) - region.z_surface_abs
+
+    def z_top_surface(self, r: float) -> float:
+        """Height of the top stack's plasma-facing surface above the substrate datum [m]."""
+        return self.gap_at(r) + (0.0 if self.gap.datum == "substrate" else self.reference_region().z_surface_abs)
 
     @property
     def r_wall(self) -> float:
@@ -549,13 +555,14 @@ def save_project(project: Project, path: str | Path) -> None:
     Path(path).write_text(project.to_json(), encoding="utf-8")
 
 
-def _representative(name: str, regions: list[Region], n_r: dict[str, int], grading: dict[str, float]) -> Project:
+def _representative(name: str, regions: list[Region], n_r: dict[str, int], grading: dict[str, float],
+                    gap: Optional[GapSpec] = None) -> Project:
     """Representative 300 mm CCP (spec 00 section 2.2) with the given lower-electrode regions."""
     return Project(
         name=name,
         geometry=Geometry(
             regions=regions,
-            gap=GapSpec(type="constant", value=0.030),
+            gap=gap or GapSpec(type="constant", value=0.030),
             top=TopSpec(conductor="ground", stack=[Layer(material="si_fr", t=6.0e-3)]),
             outer_boundary=OuterBoundary(type="short"),
         ),
@@ -581,17 +588,20 @@ def stepped_esc_project(ceramic_lower: float = 3.0e-3, ceramic_step: float = 3.0
     """Stepped electrostatic chuck: the RF substrate is always flat (z_offset = 0 everywhere) and carries one ceramic plate
     that is thicker under the wafer. The wafer lies on the upper step; the edge ring lies on the lower step, directly
     around it, with its top below the wafer. The tuning allowances are the ceramic thicknesses and the ring thickness
-    (see ESC_TUNING_PATHS); the heights of the surfaces follow from the stacks."""
+    (see ESC_TUNING_PATHS); the heights of the surfaces follow from the stacks. The top electrode is fixed relative to the
+    substrate, so a thicker ceramic narrows the plasma gap (30 mm above the wafer with the default stacks)."""
     ceramic_wafer = ceramic_lower + ceramic_step
+    wafer_t = 0.775e-3
     return _representative(
         "esc_stepped_300mm_60MHz",
         [Region(name="wafer", r_out=0.150, conductor="W",
-                stack=[Layer(material="al2o3", t=ceramic_wafer), Layer(material="si_wafer_p", t=0.775e-3)]),
+                stack=[Layer(material="al2o3", t=ceramic_wafer), Layer(material="si_wafer_p", t=wafer_t)]),
          Region(name="fr", r_out=0.180, conductor="W",
                 stack=[Layer(material="al2o3", t=ceramic_lower), Layer(material="si_fr", t=ring)]),
          Region(name="outer", r_out=0.250, conductor="G",
                 stack=[Layer(material="quartz", t=ceramic_lower + ring)])],
-        {"wafer": 24, "fr": 8, "outer": 6}, {"wafer": 1.15, "fr": 1.1})
+        {"wafer": 24, "fr": 8, "outer": 6}, {"wafer": 1.15, "fr": 1.1},
+        gap=GapSpec(type="constant", value=0.030 + ceramic_wafer + wafer_t, datum="substrate"))
 
 
 def coupling_ring_project() -> Project:

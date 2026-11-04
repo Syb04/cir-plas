@@ -25,7 +25,7 @@ COMMON_PATHS = [
     ("circuit.ports.W.sources.0.f", "ウェハ電極 周波数 [Hz]"),
     ("circuit.ports.W.sources.0.power", "ウェハ電極 電力指定 [W]"),
     *[(p, f"{label}（段付き ESC）") for p, label in ESC_TUNING_PATHS],
-    ("geometry.gap.value", "ギャップ [m]"),
+    ("geometry.gap.value", "上部電極の位置（基準からの距離）[m]"),
     ("plasma.pressure_pa", "圧力 [Pa]"),
     ("plasma.density.n0", "中心密度 n0 [m^-3]"),
     ("plasma.density.alpha", "密度放物係数 a"),
