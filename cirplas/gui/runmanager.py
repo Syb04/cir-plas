@@ -3,14 +3,43 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QObject, QProcess, Signal
+from PySide6.QtCore import QObject, QProcess, QStandardPaths, Qt, Signal
 
 from .project_model import ProjectModel
+
+
+def default_output_base() -> Path:
+    """Folder for the runs of a project without a usable folder of its own: <Documents>/CirPlas."""
+    docs = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
+    return (Path(docs) if docs else Path.home()) / "CirPlas"
+
+
+def is_writable(directory: Path) -> bool:
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        # not tempfile: on Windows it retries forever on PermissionError in a folder that os.access reports as writable
+        probe = directory / f".cirplas_write_test_{os.getpid()}"
+        probe.write_bytes(b"")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def output_base(model: ProjectModel) -> Path:
+    """Base folder of the `runs` directory: next to the project file if that folder can be written, else the user's
+    documents. Never the current directory: an installed application starts in the protected Program Files folder."""
+    candidates = ([model.path.parent] if model.path else []) + [default_output_base()]
+    for base in candidates:
+        if is_writable(base):
+            return base
+    raise OSError("結果の保存先に書き込めません: " + ", ".join(str(c) for c in candidates))
 
 
 def worker_command() -> tuple[str, list[str]]:
@@ -44,7 +73,7 @@ class RunManager(QObject):
         if self.running:
             raise RuntimeError("a run is already in progress")
         project = model.project()
-        base = base_dir or (model.path.parent if model.path else Path.cwd())
+        base = base_dir or output_base(model)
         stamp = time.strftime("%Y%m%d_%H%M%S")
         self.run_dir = base / "runs" / f"{stamp}_{mode}"
         self.run_dir.mkdir(parents=True, exist_ok=True)
@@ -61,6 +90,7 @@ class RunManager(QObject):
         self.proc.readyReadStandardOutput.connect(self._on_stdout)
         self.proc.readyReadStandardError.connect(self._on_stderr)
         self.proc.finished.connect(self._on_finished)
+        self.proc.errorOccurred.connect(self._on_error, Qt.ConnectionType.QueuedConnection)  # may fire inside start()
         self._buf = ""
         self.proc.start()
         self.started.emit(str(self.run_dir))
@@ -96,6 +126,11 @@ class RunManager(QObject):
         for line in data.splitlines():
             if line.strip():
                 self.log.emit(line)
+
+    def _on_error(self, error) -> None:
+        # a worker that cannot be started never reports `finished`
+        if error == QProcess.ProcessError.FailedToStart:
+            self.failed.emit("ワーカを起動できません: " + self.proc.errorString())
 
     def _on_finished(self, code: int, status) -> None:
         if code == 0 and self.output is not None and self.output.exists():

@@ -18,16 +18,25 @@ from ..core.project import Project, load_project
 from ..core.results import write_results
 
 
-SUBCOMMANDS = {"sweep": "sweep_cli", "optimize": "optimize_cli", "report": "report_cli"}
+def _subcommand(name: str):
+    """main() of a tool. Plain import statements on purpose: PyInstaller only bundles what it can see statically."""
+    if name == "sweep":
+        from .sweep_cli import main as tool
+    elif name == "optimize":
+        from .optimize_cli import main as tool
+    elif name == "report":
+        from .report_cli import main as tool
+    else:
+        return None
+    return tool
 
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     # the frozen bundle ships one console executable: `cirplas-solve sweep|optimize|report ...` dispatches to the tools
-    if argv and argv[0] in SUBCOMMANDS:
-        import importlib
-
-        return importlib.import_module(f"cirplas.worker.{SUBCOMMANDS[argv[0]]}").main(argv[1:])
+    tool = _subcommand(argv[0]) if argv else None
+    if tool is not None:
+        return tool(argv[1:])
     ap = argparse.ArgumentParser(prog="cirplas-solve", description="CirPlas solver worker (subcommands: sweep, optimize, report)")
     ap.add_argument("project", help="project JSON file")
     ap.add_argument("-o", "--output", default=None, help="output HDF5 file (default: <project>.h5)")

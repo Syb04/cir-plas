@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout, QGroupBox, QHB
 from ...core.analysis.sweep import get_path
 from .. import theme
 from ..project_model import ProjectModel
-from ..runmanager import worker_command
+from ..runmanager import output_base, worker_command
 
 OBJECTIVE_LABELS = [("fr_step", "FR 段差：ウェハ端と FR のシース電圧の相対差"), ("uniformity_se", "S_e 均一性（ウェハ）"),
                     ("uniformity_vsh", "シース電圧 均一性（ウェハ）")]
@@ -220,9 +220,12 @@ class OptimizePanel(QWidget):
         except ValueError as exc:
             self.status.setText(f"変数の設定が不正です: {exc}")
             return
-        base_dir = self.model.path.parent if self.model.path else Path.cwd()
-        self.outdir = base_dir / "runs" / f"{time.strftime('%Y%m%d_%H%M%S')}_optimize"
-        self.outdir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.outdir = output_base(self.model) / "runs" / f"{time.strftime('%Y%m%d_%H%M%S')}_optimize"
+            self.outdir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self.status.setText(f"起動失敗: {exc}")
+            return
         proj = self.outdir / "base.cirplas.json"
         proj.write_text(self.model.project().to_json(), encoding="utf-8")
         self.cancel_file = self.outdir / "CANCEL"
@@ -239,6 +242,7 @@ class OptimizePanel(QWidget):
         self.proc.setArguments(args)
         self.proc.readyReadStandardOutput.connect(self._on_stdout)
         self.proc.finished.connect(self._on_finished)
+        self.proc.errorOccurred.connect(self._on_error, Qt.ConnectionType.QueuedConnection)  # may fire inside start()
         self.proc.start()
         self.btn_run.setEnabled(False)
         self.btn_cancel.setEnabled(True)
@@ -276,6 +280,12 @@ class OptimizePanel(QWidget):
             self.status.setText(("中止（それまでの最良点）" if d.get("cancelled") else "完了") +
                                 f"：{d['evaluations']} 評価、目的関数 {float(d['objective']):.4g}、" +
                                 ", ".join(f"{k}={v:.6g}" for k, v in d["best"].items()))
+
+    def _on_error(self, error) -> None:
+        if error == QProcess.ProcessError.FailedToStart:
+            self.btn_run.setEnabled(True)
+            self.btn_cancel.setEnabled(False)
+            self.status.setText("ワーカを起動できません: " + self.proc.errorString())
 
     def _on_finished(self, code: int, status) -> None:
         self.btn_run.setEnabled(True)

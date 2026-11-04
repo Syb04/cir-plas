@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout, Q
 from ...core.analysis.sweep import SweepAxis, SweepSpec, get_path
 from .. import theme
 from ..project_model import ProjectModel
-from ..runmanager import worker_command
+from ..runmanager import output_base, worker_command
 
 COMMON_PATHS = [
     ("circuit.ports.W.sources.0.v", "ウェハ電極 RF 振幅 [V]"),
@@ -207,9 +207,12 @@ class SweepPanel(QWidget):
             self.status.setText(f"軸の設定が不正です: {exc}")
             return
         base = self.model.project()
-        base_dir = self.model.path.parent if self.model.path else Path.cwd()
-        self.outdir = base_dir / "runs" / f"{time.strftime('%Y%m%d_%H%M%S')}_sweep"
-        self.outdir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.outdir = output_base(self.model) / "runs" / f"{time.strftime('%Y%m%d_%H%M%S')}_sweep"
+            self.outdir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self.status.setText(f"起動失敗: {exc}")
+            return
         proj_path = self.outdir / "base.cirplas.json"
         proj_path.write_text(base.to_json(), encoding="utf-8")
         (self.outdir / "sweep.json").write_text(spec.to_json(), encoding="utf-8")
@@ -222,6 +225,7 @@ class SweepPanel(QWidget):
         self.proc.setArguments(args)
         self.proc.readyReadStandardOutput.connect(self._on_stdout)
         self.proc.finished.connect(self._on_finished)
+        self.proc.errorOccurred.connect(self._on_error, Qt.ConnectionType.QueuedConnection)  # may fire inside start()
         self._buf = ""
         self._fill_pending(spec)
         self.results = None
@@ -264,6 +268,12 @@ class SweepPanel(QWidget):
                 if i < self.table.rowCount():
                     self.table.setItem(i, 2, QTableWidgetItem("完了" if d.get("ok") else "失敗"))
                 self.status.setText(f"{d.get('done')}/{d.get('total')} 完了")
+
+    def _on_error(self, error) -> None:
+        if error == QProcess.ProcessError.FailedToStart:
+            self.btn_run.setEnabled(True)
+            self.btn_cancel.setEnabled(False)
+            self.status.setText("ワーカを起動できません: " + self.proc.errorString())
 
     def _on_finished(self, code: int, status) -> None:
         self.btn_run.setEnabled(True)

@@ -132,6 +132,7 @@ python -m venv .venv && .venv/bin/pip install -e ".[gui,dev,gui-dev]"
 
 ## 7. ファイル
 
+- 計算結果：プロジェクトファイルと同じフォルダの `runs/`。新規（未保存）のプロジェクトや、書き込めないフォルダのプロジェクトは `ドキュメント/CirPlas/runs/` に保存します。
 - プロジェクト：`*.cirplas.json`（仕様書 03 章 §4.1）
 - 結果：`run.h5`（HDF5、03 章 §4.2）。Python では `h5py` で直接読めます。`cirplas.gui.results_io.ResultData` が簡易リーダです。
 - 実行履歴：プロジェクトと同じフォルダの `runs/<日時>_<モード>/`

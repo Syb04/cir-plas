@@ -128,3 +128,13 @@ def test_plasma_state_profiles():
     assert np.allclose(st.ns, st.h_l * st.n0)
     d = st.diagnostics(2 * math.pi * 60e6, s_tot=2e-3, l_total=0.032, l_p=0.028)
     assert d["lambda_eff"] < 2 * math.pi * C.C_LIGHT / (2 * math.pi * 60e6)
+
+
+def test_worker_subcommands_resolve():
+    """The frozen bundle has one console executable; the tools must be statically importable from cli.py."""
+    from cirplas.worker import cli, optimize_cli, report_cli, sweep_cli
+
+    assert cli._subcommand("sweep") is sweep_cli.main
+    assert cli._subcommand("optimize") is optimize_cli.main
+    assert cli._subcommand("report") is report_cli.main
+    assert cli._subcommand("project.json") is None

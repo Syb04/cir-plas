@@ -27,9 +27,22 @@ def create_app(argv=None) -> QApplication:
     return app
 
 
+def show_unhandled(exc_type, exc, tb) -> None:
+    """A windowed build has no console: without this an exception in a slot would look like nothing happened."""
+    import traceback
+
+    from PySide6.QtWidgets import QMessageBox
+
+    text = "".join(traceback.format_exception(exc_type, exc, tb))
+    if sys.stderr is not None:
+        sys.stderr.write(text)
+    QMessageBox.critical(None, "内部エラー", f"{exc_type.__name__}: {exc}\n\n{text[-1500:]}")
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv if argv is None else argv)
     app = create_app(argv)
+    sys.excepthook = show_unhandled
     model = ProjectModel(default_project())
     win = MainWindow(model)
     if len(argv) > 1 and argv[1].endswith(".json"):

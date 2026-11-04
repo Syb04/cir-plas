@@ -63,6 +63,9 @@ jobs:
       - name: Build bundle (PyInstaller)
         shell: pwsh
         run: pyinstaller --noconfirm --clean packaging/cirplas.spec
+      - name: Smoke test the frozen bundle
+        shell: pwsh
+        run: ./packaging/smoke_bundle.ps1 dist/CirPlas smoke
       - name: Build installer (Inno Setup)
         shell: pwsh
         run: |

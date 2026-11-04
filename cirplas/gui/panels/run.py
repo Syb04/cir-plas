@@ -151,14 +151,17 @@ class RunPanel(QWidget):
         self.log.clear()
         self._run_mode, self._t0, self._estimate, self._expected_s, self._density_t = mode, time.monotonic(), None, None, []
         self._run_data = self.model.data
-        self.estimator.request(self.model.data, immediate=True)
-        self.eta.setText("残り時間: 見積り中…")
-        self._tick.start()
         try:
             self.manager.start(self.model, mode)
         except Exception as exc:  # noqa: BLE001
+            self._t0 = None
+            self.eta.setText("")
             self._on_log(f"起動失敗: {exc}")
+            self.status.setText(f"起動失敗: {exc}")
             return
+        self.estimator.request(self.model.data, immediate=True)
+        self.eta.setText("残り時間: 見積り中…")
+        self._tick.start()
         self.btn_run.setEnabled(False)
         self.btn_cancel.setEnabled(True)
         self.progress.setVisible(True)
