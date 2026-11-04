@@ -23,7 +23,7 @@ class AcCellResult:
     i_sc_b: complex  # capacitive-path current phasors
     i_sc_t: complex
     j_z: complex  # axial current density at the bulk mid node [A/m^2]
-    p_ohm_bulk: float  # W (0.5 |I|^2 R, axial halves + half of adjacent radial bulk branches)
+    p_ohm_bulk: float  # W (0.5 |I|^2 R, axial halves + the part of the adjacent radial bulk branches inside the cell)
     p_stoc_b: float
     p_stoc_t: float
     c_lin_b: float
@@ -89,8 +89,8 @@ def extract_ac(res: RawResult, idx: NetlistIndex, model: CircuitModel, frequency
             radial_currents[key] = i_r
             if le.drude is not None:
                 p = 0.5 * abs(i_r) ** 2 * le.drude.r
-                radial_share[b.index] += 0.5 * p
-                radial_share[b.index + 1] += 0.5 * p
+                radial_share[b.index] += b.frac_inner * p
+                radial_share[b.index + 1] += (1.0 - b.frac_inner) * p
     cells = []
     for i, ce in enumerate(model.cells):
         c = ce.cell

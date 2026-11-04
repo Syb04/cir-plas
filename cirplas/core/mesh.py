@@ -181,6 +181,7 @@ class RadialBoundary:
     dr: float  # center-to-center distance
     levels: list[RadialLevel]
     chain_dl: np.ndarray  # flux-chain inductances [H], one per level (sorted by zeta)
+    frac_inner: float = 0.5  # share of the center-to-center branch length that lies inside cell `index`
 
     @property
     def c_factor(self) -> float:
@@ -287,6 +288,6 @@ def build_mesh(project: Project, s_bottom, s_top) -> Mesh:
         chain = c * np.diff(np.concatenate([[0.0], zetas]))
         if np.any(chain <= 0):
             raise ValueError(f"boundary {i}: non-increasing level heights {zetas}")
-        boundaries.append(RadialBoundary(index=i, r=r_b, dr=dr, levels=levels, chain_dl=chain))
+        boundaries.append(RadialBoundary(index=i, r=r_b, dr=dr, levels=levels, chain_dl=chain, frac_inner=(r_b - a.r_center) / dr))
 
     return Mesh(radial=radial, cells=cells, boundaries=boundaries, n_z=spec.n_z)

@@ -139,7 +139,12 @@ class GeometryPanel(QWidget):
         self.form.add_choice("上部電極の位置の基準", "geometry.gap.datum", [("substrate", "基台から（上部電極を固定）"), ("surface", "基準領域の表面から（表面に追従）")],
                              "基台から: スタック厚を変えても上部電極は動かず、プラズマのギャップが変わる")
         self.form.add_float("基準〜上部スタック下面の距離", "geometry.gap.value", "mm", 1e3,
-                            "上で選んだ基準から上部電極側表面までの距離。上部電極は平坦。")
+                            "上で選んだ基準から上部電極側表面までの距離。形状テーブルがあるときは使われない。")
+        self.form.add_info("上部電極の形状", self._shape_text)
+        self.btn_flat = QPushButton("平坦に戻す")
+        self.btn_flat.setToolTip("形状テーブルをやめ、上の距離で平坦な電極にする")
+        self.btn_flat.clicked.connect(self._make_flat)
+        self.form.add_widget("", self.btn_flat)
         self.form.add_info("ウェハ面のギャップ", self._wafer_gap_text)
         self.form.add_choice("上部電極", "geometry.top.conductor", [("ground", "接地"), ("driven", "駆動（ポート T）")])
         self.form.add_choice("外周境界", "geometry.outer_boundary.type", [("short", "短絡（チャンバ壁）"), ("open", "開放"), ("impedance", "インピーダンス")])
@@ -174,6 +179,22 @@ class GeometryPanel(QWidget):
         geo = self.model.project().geometry
         return f"{geo.local_gap(geo.regions[0], 0.0) * 1e3:.2f} mm"
 
+    def _shape_text(self) -> str:
+        gap = self.model.get("geometry.gap", {}) or {}
+        if gap.get("type") != "table":
+            return "平坦"
+        heights = [p[1] * 1e3 for p in gap["table"]]
+        return f"テーブル {len(heights)} 点（{min(heights):.2f}〜{max(heights):.2f} mm）"
+
+    def _make_flat(self) -> None:
+        gap = dict(self.model.get("geometry.gap", {}) or {})
+        if gap.get("type") != "table":
+            return
+        if gap.get("value") is None:  # a table written by hand: the height on the axis
+            gap["value"] = gap["table"][0][1]
+        gap.update(type="constant", table=None)
+        self.model.set("geometry.gap", gap)
+
     def _selected_stack_path(self):
         row = self.table.currentRow()
         regions = self.model.get("geometry.regions", [])
@@ -201,6 +222,7 @@ class GeometryPanel(QWidget):
         elif regions:
             self.table.setCurrentCell(0, 0)
         self._blocked = False
+        self.btn_flat.setEnabled((self.model.get("geometry.gap", {}) or {}).get("type") == "table")
         self.stack.refresh()
         self.top_stack.refresh()
 

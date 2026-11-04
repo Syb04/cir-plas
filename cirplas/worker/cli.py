@@ -24,6 +24,8 @@ def _subcommand(name: str):
         from .sweep_cli import main as tool
     elif name == "optimize":
         from .optimize_cli import main as tool
+    elif name == "shape":
+        from .shape_cli import main as tool
     elif name == "report":
         from .report_cli import main as tool
     else:
@@ -33,11 +35,11 @@ def _subcommand(name: str):
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    # the frozen bundle ships one console executable: `cirplas-solve sweep|optimize|report ...` dispatches to the tools
+    # the frozen bundle ships one console executable: `cirplas-solve sweep|optimize|shape|report ...` dispatches to the tools
     tool = _subcommand(argv[0]) if argv else None
     if tool is not None:
         return tool(argv[1:])
-    ap = argparse.ArgumentParser(prog="cirplas-solve", description="CirPlas solver worker (subcommands: sweep, optimize, report)")
+    ap = argparse.ArgumentParser(prog="cirplas-solve", description="CirPlas solver worker (subcommands: sweep, optimize, shape, report)")
     ap.add_argument("project", help="project JSON file")
     ap.add_argument("-o", "--output", default=None, help="output HDF5 file (default: <project>.h5)")
     ap.add_argument("--mode", choices=["ac", "tran", "sc"], default=None, help="override numerics.analysis")

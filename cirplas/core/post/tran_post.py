@@ -119,7 +119,7 @@ def postprocess_tran(res: RawResult, idx: NetlistIndex, model: CircuitModel, per
     map_jz = np.zeros((n_c, nz))
     map_jr = np.zeros((max(n_c - 1, 1), nz))
     map_pr = np.zeros((max(n_c - 1, 1), nz))  # radial ohmic power density per boundary level [W/m^3]
-    # radial ohmic power per boundary level (distributed half/half to the adjacent cells)
+    # radial ohmic power per boundary level (shared by the adjacent cells in proportion to the branch length inside each)
     radial_cell_share = np.zeros(idx.n_cells)
     radial_layer_share = np.zeros((n_c, nz))
     p_rad_total = 0.0
@@ -140,11 +140,11 @@ def postprocess_tran(res: RawResult, idx: NetlistIndex, model: CircuitModel, per
             p = time_average(t_w, i_r * i_r) * r_val
             p_rad_total += p
             if le.level.kind == "bulk":
-                radial_cell_share[b.index] += 0.5 * p
-                radial_cell_share[b.index + 1] += 0.5 * p
+                radial_cell_share[b.index] += b.frac_inner * p
+                radial_cell_share[b.index + 1] += (1.0 - b.frac_inner) * p
                 j = le.level.index
-                radial_layer_share[b.index, j] += 0.5 * p
-                radial_layer_share[b.index + 1, j] += 0.5 * p
+                radial_layer_share[b.index, j] += b.frac_inner * p
+                radial_layer_share[b.index + 1, j] += (1.0 - b.frac_inner) * p
                 area_r = 2.0 * np.pi * b.r * le.level.thickness
                 map_jr[b.index, j] = harmonics(uni(i_r), n_per_period).amplitude(1) / area_r
                 map_pr[b.index, j] = p / (area_r * b.dr)

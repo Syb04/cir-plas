@@ -3,7 +3,7 @@
 import numpy as np
 
 from cirplas.core.analysis.common import RunContext
-from cirplas.core.analysis.density import global_model_density, run_density_iteration
+from cirplas.core.analysis.density import global_model_density, radial_power_balance, run_density_iteration
 from cirplas.core.constants import E_CHARGE
 from cirplas.core.project import (AutoOrValue, CircuitSpec, DensityIterationSpec, DensitySpec, GapSpec, Geometry, MeshSpec,
                                   NumericsSpec, OuterBoundary, PlasmaSpec, PortSpec, Project, Region, SourceSpec, TopSpec)
@@ -79,7 +79,8 @@ def test_v6_power_specified_density(backend):
 
 
 def test_v6_profile_smoother_than_heating(backend):
-    """At 60 MHz / 150 mm the center-high heating gives a density profile flatter than S_e (diffusion)."""
+    """Diffusion flattens the density across the reactor, against both S_e and the density without diffusion. Over the wafer
+    alone this does not hold: heating outside the wafer diffuses in, so n can be less uniform there than S_e."""
     from cirplas.core.project import default_project
 
     p = default_project()
@@ -90,12 +91,12 @@ def test_v6_profile_smoother_than_heating(backend):
     ctx = RunContext(project=p, backend=backend, log=lambda m: None)
     res = run_density_iteration(ctx)
     assert res.converged
-    cells = res.ac.model.mesh.cells
-    wafer = np.array([c.region == "wafer" for c in cells])
-    s_e = res.ac.radial("s_e")[wafer]
-    n = res.n[wafer]
+    s_e = res.ac.radial("s_e")
+    l_p = np.array([c.l_p for c in res.ac.model.mesh.cells])
+    no_diffusion = radial_power_balance(res.ac.model.mesh.radial.r_edges, s_e, l_p, res.ac.model.plasma, d_a=1e-9)
     u = lambda y: (y.max() - y.min()) / (2 * y.mean())
-    assert u(n) < u(s_e)
+    assert u(res.n) < u(s_e)
+    assert u(res.n) < 0.9 * u(no_diffusion)
 
 
 def test_v6_tran_refinement(backend):

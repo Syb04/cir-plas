@@ -26,6 +26,7 @@ cirplas-solve = "cirplas.worker.cli:main"
 cirplas-gui = "cirplas.gui.app:main"
 cirplas-sweep = "cirplas.worker.sweep_cli:main"
 cirplas-optimize = "cirplas.worker.optimize_cli:main"
+cirplas-shape = "cirplas.worker.shape_cli:main"
 cirplas-report = "cirplas.worker.report_cli:main"
 
 [tool.setuptools.packages.find]

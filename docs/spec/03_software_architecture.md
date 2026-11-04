@@ -70,14 +70,16 @@ cirplas/
       density.py        Level 1 密度反復（電力指定、TRAN 補正、全体モデル）
       sweep.py          パラメータスイープの展開と集約メトリクス
       optimize.py       FR 調整・均一性の自動最適化
+      shape.py          上部電極の形状最適化（S_e の平坦化）
     post/
       signals.py        再標本化、高調波、時間平均
       tran_post.py      TRAN 後処理（シース、加熱、ポート、電力収支、2D マップ）
       iedf.py           IEDF（減衰電位モデル）
   worker/
-    cli.py              cirplas-solve（--mode ac|tran|sc、サブコマンド sweep / optimize / report）
+    cli.py              cirplas-solve（--mode ac|tran|sc、サブコマンド sweep / optimize / shape / report）
     sweep_cli.py        cirplas-sweep（並列ジョブ）
     optimize_cli.py     cirplas-optimize
+    shape_cli.py        cirplas-shape
     report_cli.py       cirplas-report
   gui/
     app.py, mainwindow.py   エントリポイント、メインウィンドウ（タブ・ドック・メニュー）
@@ -87,7 +89,7 @@ cirplas/
     autosave.py         自動保存と復元
     theme.py            テーマ（ライト / ダーク）
     results_io.py       結果読み込み（core.result_data の再公開）
-    panels/             geometry, plasma, circuit, numerics, run, results, results_extra, sweep, optimize, compare
+    panels/             geometry, plasma, circuit, numerics, run, results, results_extra, sweep, optimize, shape, compare
     widgets/            paramform（設定フォーム）, crosssection（断面図）, schematic（回路図エディタ）
   data/
     gases/ar.json       Ar の反応速度係数（L&L Table 3.3）、質量、σ_i
@@ -267,7 +269,7 @@ cirplas/
   `dist/CirPlas/` に生成し、Inno Setup（`installer.iss`、日本語既定）でインストーラを作ります。ngspice は **MSYS2 の `mingw-w64-x86_64-ngspice`**
   パッケージから `libngspice-0.dll` と依存ランタイム DLL を取得して同梱します（`fetch_ngspice_msys2.sh`）。GitHub Actions の `windows-package`
   ジョブがこれを自動実行し、インストーラとバンドルを成果物として保存します。凍結バンドルでは GUI が隣接する `cirplas-solve.exe` を起動し、
-  スイープ・最適化・レポートも同じ実行ファイルのサブコマンド（`cirplas-solve sweep|optimize|report`）で動かします。
+  スイープ・最適化・レポートも同じ実行ファイルのサブコマンド（`cirplas-solve sweep|optimize|shape|report`）で動かします。
   2026-10-30 に GitHub Actions 上でインストーラ生成まで成功しました（成果物 `CirPlas-windows`、約 220 MB、MSYS2 UCRT64 の ngspice 42 同梱）。
   最新版インストーラの Windows 実機での動作確認は後日実施します（06 章の追加決定）。
 - UI 既定言語（決定）：日本語（英語に切替可）。

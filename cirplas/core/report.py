@@ -169,7 +169,11 @@ def input_rows(project: dict) -> list[tuple[str, str]]:
         rows.append((f"領域 {reg['name']}（{reg['conductor']}）", f"r_out {reg['r_out'] * 1e3:.1f} mm, z_offset {reg.get('z_offset', 0) * 1e3:.2f} mm, {stack or '裸電極'}"))
     gap = g.get("gap", {})
     if gap:
-        rows.append(("ギャップ", f"{gap.get('value', 0) * 1e3:.2f} mm"))
+        if gap.get("type") == "table":
+            heights = [p[1] * 1e3 for p in gap["table"]]
+            rows.append(("上部電極の形状", f"テーブル {len(heights)} 点、{min(heights):.2f}–{max(heights):.2f} mm"))
+        else:
+            rows.append(("ギャップ", f"{gap.get('value', 0) * 1e3:.2f} mm"))
     pl = project.get("plasma", {})
     if pl:
         rows.append(("ガス / 圧力", f"{pl.get('gas')} / {pl.get('pressure_pa', 0):.3g} Pa"))

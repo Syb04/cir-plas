@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen
+import numpy as np
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView
 
 from ...core.project import Project
@@ -71,22 +72,28 @@ class CrossSectionView(QGraphicsView):
                 rect = QRectF(r0, -(z + layer.t) * S * Z, r1 - r0, layer.t * S * Z)
                 sc.addRect(rect, pen_thin, QBrush(col))
                 z += layer.t
-            # plasma gap above this region
-            gap = geo.local_gap(reg, 0.5 * (r_in + reg.r_out))
-            rect = QRectF(r0, -(z + gap) * S * Z, r1 - r0, gap * S * Z)
-            sc.addRect(rect, QPen(Qt.PenStyle.NoPen), QBrush(COLORS["plasma"]))
-            y_top_plate = -(z + gap) * S * Z
+            # plasma gap above this region, up to the electrode surface
+            rs = np.linspace(r_in, reg.r_out, 41) if geo.gap.type == "table" else np.array([r_in, reg.r_out])
+            top = [QPointF(r * S, -geo.z_top_surface(float(r)) * S * Z) for r in rs]
+            sc.addPolygon(QPolygonF([QPointF(r0, -z * S * Z), QPointF(r1, -z * S * Z)] + top[::-1]), QPen(Qt.PenStyle.NoPen), QBrush(COLORS["plasma"]))
+            y_top_plate = min([p.y() for p in top] + ([y_top_plate] if y_top_plate is not None else []))
             r_in = reg.r_out
-        # top stack and top conductor (flat)
+        # top stack and top conductor: constant thickness, following the electrode surface
         r_wall = geo.r_wall * S
-        z = geo.z_top_surface(0.0)
+        rs = np.linspace(0.0, geo.r_wall, 201) if geo.gap.type == "table" else np.array([0.0, geo.r_wall])
+        z_line = np.array([geo.z_top_surface(float(r)) for r in rs])
+
+        def band(lower: np.ndarray, thickness: float, brush: QBrush) -> None:
+            pts = [QPointF(r * S, -zz * S * Z) for r, zz in zip(rs, lower)]
+            pts += [QPointF(r * S, -(zz + thickness) * S * Z) for r, zz in zip(rs[::-1], lower[::-1])]
+            sc.addPolygon(QPolygonF(pts), pen_thin, brush)
+
         for layer in reversed(geo.top.stack):  # listed top->bottom; draw bottom-up
             name = layer.material if isinstance(layer.material, str) else "custom"
-            rect = QRectF(0, -(z + layer.t) * S * Z, r_wall, layer.t * S * Z)
-            sc.addRect(rect, pen_thin, QBrush(QColor(MATERIAL_COLORS.get(name, "#cfd8dc"))))
-            z += layer.t
-        rect = QRectF(0, -(z + 4e-3) * S * Z, r_wall, 4.0 * Z)
-        sc.addRect(rect, pen_thin, QBrush(COLORS["metal_top"]))
+            band(z_line, layer.t, QBrush(QColor(MATERIAL_COLORS.get(name, "#cfd8dc"))))
+            z_line = z_line + layer.t
+        band(z_line, 4e-3, QBrush(COLORS["metal_top"]))
+        z = float(z_line.max())
         top_label = sc.addText("上部電極 " + ("(接地)" if geo.top.conductor == "ground" else "(駆動 T)"), QFont("sans", 8))
         top_label.setDefaultTextColor(QColor(t["text"]))
         top_label.setPos(2, -(z + 4e-3) * S * Z - 16)

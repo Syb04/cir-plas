@@ -20,6 +20,7 @@ from .panels.optimize import OptimizePanel
 from .panels.plasma import PlasmaPanel
 from .panels.results import ResultsPanel
 from .panels.run import RunPanel
+from .panels.shape import ShapePanel
 from .panels.sweep import SweepPanel
 from .autosave import AutoSaver
 from .project_model import ProjectModel
@@ -103,6 +104,7 @@ class MainWindow(QMainWindow):
         self.sweep = SweepPanel(self.model)
         self.compare = ComparePanel()
         self.optimize = OptimizePanel(self.model)
+        self.shape = ShapePanel(self.model)
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
         self.tabs.setProperty("flat", "true")
@@ -112,6 +114,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.results, "結果")
         self.tabs.addTab(self.sweep, "スイープ")
         self.tabs.addTab(self.optimize, "最適化")
+        self.tabs.addTab(self.shape, "電極形状")
         self.tabs.addTab(self.compare, "比較")
         self.sweep.open_result.connect(self._show_results)
         central = QWidget()
