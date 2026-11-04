@@ -35,15 +35,33 @@ def test_defaults_and_arguments(qtbot, model):
     assert "--free-rim" in panel.cli_arguments()
 
 
+def test_density_objective_fixes_the_mode_to_sc(qtbot, model):
+    from cirplas.gui.panels.shape import ShapePanel
+
+    panel = ShapePanel(model)
+    qtbot.addWidget(panel)
+    panel.objective.setCurrentIndex(panel.objective.findData("density"))
+    args = panel.cli_arguments()
+    assert args[args.index("--objective") + 1] == "density" and args[args.index("--mode") + 1] == "sc"
+    assert not panel.mode.isEnabled()
+    assert "--tran-heating" in args and panel.tran_heating.isEnabled()
+    panel.tran_heating.setChecked(False)
+    assert "--no-tran-heating" in panel.cli_arguments()
+    panel.objective.setCurrentIndex(panel.objective.findData("s_e"))
+    assert panel.mode.isEnabled()
+    panel.mode.setCurrentIndex(panel.mode.findData("tran"))
+    assert not panel.tran_heating.isEnabled() and "--no-tran-heating" not in panel.cli_arguments()
+
+
 def test_progress_display(qtbot, model):
     from cirplas.gui.panels.shape import ShapePanel
 
     panel = ShapePanel(model)
     qtbot.addWidget(panel)
-    panel.handle_progress({"stage": "shape", "evaluation": 1, "rms": 0.2, "uniformity": 0.3, "s_e_mean": 1000.0, "error": ""})
+    panel.handle_progress({"stage": "shape", "evaluation": 1, "rms": 0.2, "uniformity": 0.3, "mean": 1000.0, "error": ""})
     panel.handle_progress({"stage": "shape_jacobian", "done": 2, "total": 6})
     assert "2/6" in panel.status.text()
-    panel.handle_progress({"stage": "shape", "evaluation": 2, "rms": float("inf"), "uniformity": float("inf"), "s_e_mean": float("nan"), "error": "bad"})
+    panel.handle_progress({"stage": "shape", "evaluation": 2, "rms": float("inf"), "uniformity": float("inf"), "mean": float("nan"), "error": "bad"})
     assert panel.table.rowCount() == 2 and panel.table.item(1, 1).text().startswith("失敗")
     panel.handle_progress({"stage": "shape_done", "rms_start": 0.2, "rms": 0.05, "uniformity_start": 0.3, "uniformity": 0.08, "evaluations": 2,
                            "stop_reason": "制約内で収束", "active": ["傾斜の上限"], "cancelled": False})
@@ -63,6 +81,7 @@ def test_worker_run_and_apply(qtbot, model, tmp_path):
     qtbot.waitUntil(lambda: panel.btn_run.isEnabled(), timeout=180000)
     assert panel.best_project is not None, panel.status.text()
     assert panel.evaluations and panel.summary["best"]["rms"] <= panel.summary["start"]["rms"]
+    assert panel.summary["objective"] == "s_e"
     assert len(panel.plot_se.getPlotItem().listDataItems()) == 2
     name = model.get("name")
     panel.apply_best()

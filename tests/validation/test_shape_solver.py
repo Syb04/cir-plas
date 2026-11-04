@@ -51,6 +51,19 @@ def test_sc_mode_reaches_the_target(backend):
     assert res.project.plasma.density == default_project().plasma.density  # the warm-start density stays internal
 
 
+def test_density_objective_flattens_the_density(backend):
+    res = optimize_shape(_ctx(default_project(), backend), ShapeSpec(mode="sc", objective="density"))
+    assert res.best.rms < 0.35 * res.start.rms, (res.best.rms, res.stop_reason)
+    assert res.project.plasma.density == default_project().plasma.density
+
+
+def test_density_objective_with_the_tran_heating(backend):
+    p = _coarse()
+    res = optimize_shape(_ctx(p, backend), ShapeSpec(mode="sc", objective="density", tran_heating=True, max_eval=3))
+    assert res.best.rms < res.start.rms, res.history
+    assert not res.project.numerics.density_iteration.refine_with_tran  # the choice belongs to the search, not to the project
+
+
 def test_tran_mode_improves_the_transient_profile(backend):
     p = _coarse()
     res = optimize_shape(_ctx(p, backend), ShapeSpec(mode="tran", max_eval=4))
@@ -65,6 +78,19 @@ def test_power_specified_drive_is_honored(backend):
     fixed = evaluate_profile(_ctx(default_project(), backend), default_project(), "ac", ShapeSpec())
     prof = evaluate_profile(_ctx(p, backend), p, "ac", ShapeSpec())
     assert abs(prof.power - 500.0) < 0.6 * abs(fixed.power - 500.0)  # AC corrects the amplitude once (P ~ V^2), it does not iterate
+
+
+def test_worker_cli_density_defaults_to_sc(backend, tmp_path):
+    from cirplas.worker.cli import main
+
+    base = tmp_path / "p.cirplas.json"
+    base.write_text(default_project().to_json(), encoding="utf-8")
+    hist = tmp_path / "shape.json"
+    assert main(["shape", str(base), "-o", str(tmp_path / "b.json"), "--history", str(hist), "--objective", "density", "--max-eval", "2", "--progress", "none"]) == 0
+    h = json.loads(hist.read_text(encoding="utf-8"))
+    assert h["mode"] == "sc" and h["objective"] == "density" and h["best"]["values"] == h["best"]["density"]
+    # a combination the model cannot answer is refused, not silently run
+    assert main(["shape", str(base), "-o", str(tmp_path / "c.json"), "--objective", "density", "--mode", "tran", "--progress", "none"]) == 1
 
 
 def test_worker_cli_writes_project_and_history(backend, tmp_path):

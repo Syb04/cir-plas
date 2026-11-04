@@ -1,14 +1,16 @@
 """Top-electrode shape optimization: find the height profile of the top stack's plasma-facing surface that flattens the
-electron heating S_e(r) over the target region (spec 02 section 3.9).
+electron heating S_e(r), or the self-consistent electron density n(r), over the target region (spec 02 section 3.9).
 
 Shape.  The displacement from the starting shape is a clamped cubic B-spline over [0, r_wall]. The control coefficients are
 the unknowns, because a B-spline lies in the convex hull of its coefficients and its derivative is a B-spline of their
 scaled differences: displacement, plasma-gap and slope limits are then exact linear constraints, and they hold everywhere
 along the electrode, not only at sample points. The slope on the axis is zero (axisymmetry); the rim can stay at its height.
 
-Objective.  r_i = sqrt(w_i) (S_i / mean - 1) on the target cells with w_i proportional to the cell width, so that every
-millimeter of radius counts the same on the graded mesh; ||r|| is the relative RMS of S_e. A curvature term keeps the shape
-smooth.
+Objective.  r_i = sqrt(w_i) (y_i / mean - 1) on the target cells, y being S_e or n, with w_i proportional to the cell width,
+so that every millimeter of radius counts the same on the graded mesh; ||r|| is the relative RMS of y. A curvature term keeps
+the shape smooth. The density only responds to the shape in the self-consistent solution, so objective "density" needs mode
+"sc". Use it with `tran_heating`: without the harmonics of the transient the heating, and with it the best shape, can even
+have the opposite sign.
 
 Search.  Constrained Gauss-Newton with Levenberg damping: each step is a small convex problem solved without the circuit
 solver. The Jacobian comes from finite differences of a cheaper model where the requested one is too slow: mode "tran"
@@ -31,21 +33,24 @@ from ..project import Project
 from .common import RunContext
 
 MODES = ("ac", "sc", "tran")
+OBJECTIVES = ("s_e", "density")
 MM = 1e-3  # the unknowns are in mm: well scaled against the O(1) residuals
 
 
 @dataclass
 class ShapeSpec:
     mode: str = "ac"
+    objective: str = "s_e"  # the profile to flatten: "s_e" or "density" (mode "sc" only)
+    tran_heating: Optional[bool] = None  # mode "sc": correct the density with the TRAN heating (None: the project's refine_with_tran)
     n_ctrl: int = 6  # free control coefficients of the spline
-    target_region: Optional[str] = None  # flatten S_e over this region (default: the first one)
+    target_region: Optional[str] = None  # flatten the profile over this region (default: the first one)
     dz_max: float = 10e-3  # largest displacement from the starting shape, either way [m]
     max_slope: float = 0.2  # |dz/dr| of the whole electrode surface
     min_gap: float = 15e-3  # smallest distance between the electrode surface and the lower surfaces [m]
     pin_rim: bool = True  # the electrode stays at its height at the outer wall
     smooth: float = 1e-3  # weight of the curvature term
     max_eval: int = 12  # evaluations of the requested model, Jacobians not counted
-    target_rms: float = 0.005  # stop when the relative RMS of S_e is below this
+    target_rms: float = 0.005  # stop when the relative RMS of the profile is below this
     tol: float = 0.01  # stop when a step improves the objective by less than this fraction
     fd_step: float = 1e-3  # finite-difference step [m]
     table_dr: float = 2.5e-3  # sampling of the resulting gap table [m]
@@ -53,22 +58,31 @@ class ShapeSpec:
 
 @dataclass
 class Profile:
-    """S_e of one solution, with what the search and the reports need."""
+    """The profiles of one solution, with what the search and the reports need; `quantity` is the one being flattened."""
 
     r: np.ndarray
     s_e: np.ndarray
     weights: np.ndarray  # zero outside the target region, sum = 1
     power: float
     density: Optional[np.ndarray] = None  # self-consistent density (mode "sc"): warm start of the next solve
+    quantity: str = "s_e"
+
+    @property
+    def values(self) -> np.ndarray:
+        return self.density if self.quantity == "density" else self.s_e
 
     @property
     def mean(self) -> float:
+        return float(np.sum(self.weights * self.values))
+
+    @property
+    def s_e_mean(self) -> float:
         return float(np.sum(self.weights * self.s_e))
 
     @property
     def residual(self) -> np.ndarray:
         m = self.weights > 0
-        return np.sqrt(self.weights[m]) * (self.s_e[m] / self.mean - 1.0)
+        return np.sqrt(self.weights[m]) * (self.values[m] / self.mean - 1.0)
 
     @property
     def rms(self) -> float:
@@ -76,7 +90,7 @@ class Profile:
 
     @property
     def uniformity(self) -> float:
-        y = self.s_e[self.weights > 0]
+        y = self.values[self.weights > 0]
         return float((y.max() - y.min()) / (2.0 * self.mean))
 
 
@@ -215,8 +229,9 @@ def with_shape(project: Project, r: np.ndarray, gap: np.ndarray) -> Project:
 
 
 def evaluate_profile(ctx: RunContext, project: Project, mode: str, spec: ShapeSpec, warm_density: Optional[np.ndarray] = None,
-                     refine: bool = True) -> Profile:
-    """One solution of `project`: power-specified sources are honored, and mode "sc" follows `refine_with_tran` if `refine`."""
+                     refine: Optional[bool] = None) -> Profile:
+    """One solution of `project`: power-specified sources are honored, and mode "sc" adds the TRAN correction if `refine`
+    (None: as `refine_with_tran` of the project says)."""
     from .density import _project_with_density, refine_with_tran, run_density_iteration
     from .power_drive import run_power_drive
 
@@ -231,7 +246,7 @@ def evaluate_profile(ctx: RunContext, project: Project, mode: str, spec: ShapeSp
         sc = run_density_iteration(sub)
         density = sc.n.copy()
         ac, tran = sc.ac, None
-        if refine and project.numerics.density_iteration.refine_with_tran:
+        if project.numerics.density_iteration.refine_with_tran if refine is None else refine:
             final = Project.model_validate_json(sc.notes["final_project"])
             _, ac, tran = refine_with_tran(RunContext(project=final, backend=ctx.backend, log=lambda m: None, progress=lambda d: None, cancel=ctx.cancel), sc)
             density = sc.n.copy()
@@ -244,7 +259,7 @@ def evaluate_profile(ctx: RunContext, project: Project, mode: str, spec: ShapeSp
     w = np.where(inside, width, 0.0)
     ports = tran.post.ports if tran is not None else ac.ports
     return Profile(r=np.array([c.r_center for c in cells]), s_e=np.asarray(src.radial("s_e"), dtype=float), weights=w / w.sum(),
-                   power=float(sum(p.p for p in ports)), density=density)
+                   power=float(sum(p.p for p in ports)), density=density, quantity=spec.objective)
 
 
 def _step(x: np.ndarray, res: np.ndarray, jac: np.ndarray, basis: ShapeBasis, mu: float) -> np.ndarray:
@@ -263,13 +278,18 @@ def _step(x: np.ndarray, res: np.ndarray, jac: np.ndarray, basis: ShapeBasis, mu
 def optimize_shape(ctx: RunContext, spec: ShapeSpec, on_eval: Optional[Callable[[dict], None]] = None) -> ShapeResult:
     if spec.mode not in MODES:
         raise ValueError(f"unknown mode '{spec.mode}' (choose from {', '.join(MODES)})")
+    if spec.objective not in OBJECTIVES:
+        raise ValueError(f"unknown objective '{spec.objective}' (choose from {', '.join(OBJECTIVES)})")
+    if spec.objective == "density" and spec.mode != "sc":
+        raise ValueError("objective 'density' needs mode 'sc': the density is an input of the other modes")
     base = ctx.project
     basis = ShapeBasis(base, spec)
     history: list[dict] = []
     n_jac = 0
     # a transient is too slow for finite differences: AC stands in for "tran", the AC-based iteration for a refined "sc"
     jac_mode = "ac" if spec.mode == "tran" else spec.mode
-    own_jacobian = spec.mode == "ac" or (spec.mode == "sc" and not base.numerics.density_iteration.refine_with_tran)
+    refined = base.numerics.density_iteration.refine_with_tran if spec.tran_heating is None else spec.tran_heating
+    own_jacobian = spec.mode == "ac" or (spec.mode == "sc" and not refined)
 
     def cost_of(x: np.ndarray, prof: Profile) -> float:
         return float(prof.rms ** 2 + np.sum((basis.curvature @ x) ** 2))
@@ -283,14 +303,15 @@ def optimize_shape(ctx: RunContext, spec: ShapeSpec, on_eval: Optional[Callable[
             raise _Stop("評価回数の上限")
         err = ""
         try:
-            prof = evaluate_profile(ctx, shaped(x), spec.mode, spec, warm)
+            prof = evaluate_profile(ctx, shaped(x), spec.mode, spec, warm, refine=refined)
             cost = cost_of(x, prof)
             if not math.isfinite(cost):
-                prof, cost, err = None, math.inf, "S_e が有限でない"
+                prof, cost, err = None, math.inf, "分布が有限でない"
         except Exception as exc:  # noqa: BLE001
             prof, cost, err = None, math.inf, str(exc)
         rec = {"x_mm": [float(v) for v in x], "cost": cost, "rms": prof.rms if prof else math.inf, "uniformity": prof.uniformity if prof else math.inf,
-               "s_e_mean": prof.mean if prof else math.nan, "power": prof.power if prof else math.nan, "error": err}
+               "mean": prof.mean if prof else math.nan, "s_e_mean": prof.s_e_mean if prof else math.nan,
+               "power": prof.power if prof else math.nan, "error": err}
         history.append(rec)
         ctx.progress({"stage": "shape", "evaluation": len(history), **rec})
         ctx.log(f"shape eval {len(history)}: rms={rec['rms']:.4g} uniformity={rec['uniformity']:.4g} x={np.round(x, 3)} mm")
@@ -302,7 +323,7 @@ def optimize_shape(ctx: RunContext, spec: ShapeSpec, on_eval: Optional[Callable[
         return prof, cost
 
     def jacobian(x: np.ndarray, prof: Profile) -> np.ndarray:
-        """d r / d x of the normalized profile `prof`, with d ln S_e / d x from `jac_mode`."""
+        """d r / d x of the normalized profile `prof`, with d ln y / d x from `jac_mode`."""
         def solve(q: np.ndarray, warm: Optional[np.ndarray]) -> Profile:
             nonlocal n_jac
             n_jac += 1
@@ -330,9 +351,9 @@ def optimize_shape(ctx: RunContext, spec: ShapeSpec, on_eval: Optional[Callable[
                 sign = -sign
                 xk[k] = x[k] + sign * h
                 pert = solve(xk, ref.density)
-            dlog[:, k] = (np.log(pert.s_e[m]) - np.log(ref.s_e[m])) / (sign * h)
+            dlog[:, k] = (np.log(pert.values[m]) - np.log(ref.values[m])) / (sign * h)
             ctx.progress({"stage": "shape_jacobian", "done": k + 1, "total": len(x)})
-        w, ratio = prof.weights[m], prof.s_e[m] / prof.mean
+        w, ratio = prof.weights[m], prof.values[m] / prof.mean
         return (np.sqrt(w) * ratio)[:, None] * (dlog - (w * ratio) @ dlog)
 
     x = np.zeros(basis.n)

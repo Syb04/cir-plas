@@ -1,4 +1,4 @@
-"""Electrode shape tab: top-electrode profile that flattens S_e (core/analysis/shape.py), run as a worker process."""
+"""Electrode shape tab: top-electrode profile that flattens S_e or n (core/analysis/shape.py), run as a worker process."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from ..runmanager import output_base, worker_command
 
 MODE_LABELS = [("tran", "TRAN（推奨：高調波を含む。勾配は AC から、1 ステップ数分）"), ("sc", "SC（密度自己無撞着、速い）"),
                ("ac", "AC（密度固定・高調波なし、最速の下見）")]
+OBJECTIVE_LABELS = [("s_e", "電子加熱 S_e"), ("density", "電子密度 n（SC のみ）")]
 
 
 def _spin(lo: float, hi: float, value: float, step: float, decimals: int, suffix: str = "") -> QDoubleSpinBox:
@@ -40,15 +41,23 @@ class ShapePanel(QWidget):
         self.summary: dict | None = None
         self.evaluations: list[dict] = []
         lay = QVBoxLayout(self)
-        note = QLabel("上部スタック下面の高さ分布を探索し、対象領域の電子加熱 S_e(r) を平坦にします。上部スタックは厚さ一定のまま面に沿います。")
+        note = QLabel("上部スタック下面の高さ分布を探索し、対象領域の電子加熱 S_e(r) または電子密度 n(r) を平坦にします。上部スタックは厚さ一定のまま面に沿います。")
         note.setProperty("role", "muted")
         note.setWordWrap(True)
         lay.addWidget(note)
 
         form = QFormLayout()
+        self.objective = QComboBox()
+        for k, label in OBJECTIVE_LABELS:
+            self.objective.addItem(label, k)
         self.mode = QComboBox()
         for k, label in MODE_LABELS:
             self.mode.addItem(label, k)
+        self.tran_heating = QCheckBox("TRAN の加熱で密度を補正（推奨）")
+        self.tran_heating.setChecked(True)
+        self.tran_heating.setToolTip("オフでは AC の加熱だけで密度を解きます。高調波が入らず、最適形状が逆向きになることがあります")
+        self.mode.currentIndexChanged.connect(lambda: self.tran_heating.setEnabled(self.mode.currentData() == "sc"))
+        self.tran_heating.setEnabled(self.mode.currentData() == "sc")
         self.region = QComboBox()
         self.n_ctrl = QSpinBox()
         self.n_ctrl.setRange(3, 12)
@@ -79,7 +88,9 @@ class ShapePanel(QWidget):
             row2.addWidget(w)
         row2.addWidget(self.free_rim)
         row2.addStretch(1)
+        form.addRow("平坦にする分布", self.objective)
         form.addRow("評価モード", self.mode)
+        form.addRow("", self.tran_heating)
         form.addRow("平坦化する領域", self.region)
         form.addRow(row1)
         form.addRow(row2)
@@ -105,7 +116,7 @@ class ShapePanel(QWidget):
 
         split = QSplitter(Qt.Orientation.Horizontal)
         self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["#", "RMS", "(max-min)/2mean", "平均 S_e [W/m²]"])
+        self.table.setHorizontalHeaderLabels(["#", "RMS", "(max-min)/2mean", "領域平均"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().setVisible(False)
         plots = QSplitter(Qt.Orientation.Vertical)
@@ -116,7 +127,6 @@ class ShapePanel(QWidget):
         self.plot_se = theme.make_plot()
         self.plot_se.showGrid(x=True, y=True, alpha=0.3)
         self.plot_se.setLabel("bottom", "r [mm]")
-        self.plot_se.setLabel("left", "S_e / 領域平均")
         self.plot_se.addLegend()
         plots.addWidget(self.plot_gap)
         plots.addWidget(self.plot_se)
@@ -126,6 +136,17 @@ class ShapePanel(QWidget):
         lay.addWidget(split, 1)
         model.changed.connect(self._refresh_regions)
         self._refresh_regions()
+        self.objective.currentIndexChanged.connect(self._objective_changed)
+        self._objective_changed()
+
+    def _objective_changed(self) -> None:
+        """The density is an input of AC and TRAN: only the self-consistent solution can flatten it."""
+        density = self.objective.currentData() == "density"
+        if density:
+            self.mode.setCurrentIndex(self.mode.findData("sc"))
+        self.mode.setEnabled(not density)
+        self.mode.setToolTip("密度は AC・TRAN では入力値なので、SC で評価します" if density else "")
+        self.plot_se.setLabel("left", ("n" if density else "S_e") + " / 領域平均")
 
     def _refresh_regions(self) -> None:
         names = [r.get("name", "") for r in self.model.data.get("geometry", {}).get("regions", [])]
@@ -137,9 +158,11 @@ class ShapePanel(QWidget):
                 self.region.setCurrentText(current)
 
     def cli_arguments(self) -> list[str]:
-        args = ["--mode", self.mode.currentData(), "--n-ctrl", str(self.n_ctrl.value()), "--dz-mm", str(self.dz.value()),
+        args = ["--objective", self.objective.currentData(), "--mode", self.mode.currentData(), "--n-ctrl", str(self.n_ctrl.value()), "--dz-mm", str(self.dz.value()),
                 "--max-slope", str(self.slope.value()), "--min-gap-mm", str(self.min_gap.value()), "--smooth", str(self.smooth.value()),
                 "--max-eval", str(self.max_eval.value()), "--region", self.region.currentText()]
+        if self.mode.currentData() == "sc":
+            args.append("--tran-heating" if self.tran_heating.isChecked() else "--no-tran-heating")
         return args + (["--free-rim"] if self.free_rim.isChecked() else [])
 
     # ------------------------------------------------------------------ run
@@ -203,7 +226,7 @@ class ShapePanel(QWidget):
             rms = float(d["rms"])
             ok = math.isfinite(rms)
             cells = (str(d["evaluation"]), f"{rms:.2%}" if ok else f"失敗 {d.get('error', '')[:60]}",
-                     f"{float(d['uniformity']):.2%}" if ok else "", f"{float(d['s_e_mean']):.4g}" if ok else "")
+                     f"{float(d['uniformity']):.2%}" if ok else "", f"{float(d['mean']):.4g}" if ok else "")
             for c, text in enumerate(cells):
                 self.table.setItem(r, c, QTableWidgetItem(text))
             best = min((float(e["rms"]) for e in self.evaluations), default=math.inf)
@@ -254,4 +277,4 @@ class ShapePanel(QWidget):
         for key, k, name in (("start", 0, "開始"), ("best", 1, "最適化後")):
             p = s[key]
             m = np.array(p["target"], dtype=bool)
-            self.plot_se.plot(np.array(p["r"])[m] * 1e3, np.array(p["s_e"])[m] / float(p["s_e_mean"]), pen=theme.series_pen(k), name=name)
+            self.plot_se.plot(np.array(p["r"])[m] * 1e3, np.array(p["values"])[m] / float(p["mean"]), pen=theme.series_pen(k), name=name)

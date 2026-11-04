@@ -86,6 +86,15 @@ def test_profile_measures():
     assert np.sum(np.sqrt(prof.weights[:3]) * prof.residual) == pytest.approx(0.0)
 
 
+def test_profile_flattens_the_chosen_quantity():
+    w = np.array([0.5, 0.5])
+    s_e, n = np.array([100.0, 100.0]), np.array([1.0e16, 3.0e16])
+    heating = Profile(r=np.zeros(2), s_e=s_e, weights=w, power=1.0, density=n)
+    density = Profile(r=np.zeros(2), s_e=s_e, weights=w, power=1.0, density=n, quantity="density")
+    assert heating.rms == 0.0 and density.rms == pytest.approx(0.5)
+    assert density.mean == pytest.approx(2.0e16) and density.s_e_mean == pytest.approx(100.0)
+
+
 def test_heating_share_follows_the_cell_widths():
     """A branch between unequal cells lies mostly in the wider one; a uniform J_r then heats both cells alike."""
     p = default_project()
@@ -151,6 +160,39 @@ def test_the_limits_stop_the_search_and_are_reported(monkeypatch):
     assert "変位の上限" in res.active or "変位の下限・最小ギャップ" in res.active
 
 
+def test_search_flattens_the_density_rather_than_the_heating(monkeypatch):
+    """S_e and n respond differently to the gap: the search must follow the one that was asked for."""
+
+    def evaluate(ctx, project, mode, spec, warm=None, refine=True):
+        dz = np.array([project.geometry.gap_at(float(r)) for r in R]) - Z0
+        return Profile(r=R, s_e=1000.0 * np.exp(30.0 * dz), weights=TARGET, power=1.0, density=1e13 * S0 * np.exp(-60.0 * dz), quantity=spec.objective)
+
+    monkeypatch.setattr(sh, "evaluate_profile", evaluate)
+    res = optimize_shape(_ctx(), ShapeSpec(mode="sc", objective="density", dz_max=30e-3, target_rms=0.004))
+    assert res.best.rms < 0.01 and res.best.quantity == "density"
+    m = res.best.weights > 0
+    assert np.std(res.best.s_e[m]) > np.std(res.start.s_e[m])  # the heating was flat and is not any more
+
+
+@pytest.mark.parametrize("tran_heating, setting, fine_refine, jacobians", [(True, False, True, True), (None, True, True, True), (False, True, False, False),
+                                                                           (None, False, False, False)])
+def test_tran_heating_overrides_the_project_setting(monkeypatch, tran_heating, setting, fine_refine, jacobians):
+    """The refined model is only used for the residual: its finite differences would cost one transient each."""
+    seen = []
+
+    def evaluate(ctx, project, mode, spec, warm=None, refine=None):
+        seen.append(refine)
+        return Profile(r=R, s_e=S0, weights=TARGET, power=1.0, density=S0.copy(), quantity=spec.objective)
+
+    monkeypatch.setattr(sh, "evaluate_profile", evaluate)
+    ctx = _ctx()
+    ctx.project.numerics.density_iteration.refine_with_tran = setting
+    optimize_shape(ctx, ShapeSpec(mode="sc", objective="density", tran_heating=tran_heating, max_eval=1))
+    assert seen[0] is fine_refine
+    assert all(v is False for v in seen[1:])  # Jacobian solves
+    assert (seen[1:] != []) and len(seen) == 1 + 6 + (1 if jacobians else 0)
+
+
 def test_a_failing_point_is_rejected_and_the_search_goes_on(monkeypatch):
     evaluate, _ = _model(fail=lambda d: np.max(np.abs(d)) > 1.5e-3)
     monkeypatch.setattr(sh, "evaluate_profile", evaluate)
@@ -196,3 +238,11 @@ def test_unknown_region_and_mode():
         ShapeBasis(default_project(), ShapeSpec(target_region="nope"))
     with pytest.raises(ValueError, match="mode"):
         optimize_shape(_ctx(), ShapeSpec(mode="foo"))
+    with pytest.raises(ValueError, match="objective"):
+        optimize_shape(_ctx(), ShapeSpec(objective="foo"))
+
+
+@pytest.mark.parametrize("mode", ["ac", "tran"])
+def test_density_objective_needs_the_self_consistent_mode(mode):
+    with pytest.raises(ValueError, match="needs mode 'sc'"):
+        optimize_shape(_ctx(), ShapeSpec(mode=mode, objective="density"))
